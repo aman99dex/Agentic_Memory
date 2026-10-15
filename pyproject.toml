@@ -1,0 +1,37 @@
+[project]
+name = "agentic-memory"
+version = "0.0.1"
+description = "Self-hostable long-term memory service for LLM agents"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "psycopg[binary,pool]>=3.3",
+    "pgvector>=0.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "testcontainers[postgres]>=4.15",
+    "ruff>=0.17",
+    "mypy>=2.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["archive"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = ["S101"]  # assert is how pytest works
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
