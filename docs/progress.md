@@ -4,7 +4,7 @@ Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
 - **Phase:** 0 done. **Next: Phase 1, storage and plain retrieval.**
-- **Branch:** `phase-0-clean-slate` (not yet merged to `main`, not pushed)
+- **Branch:** `main` (Phase 0 merged via PR #1, CI green)
 
 ## Next session: Phase 1 checklist
 1. New branch `phase-1-storage`.
@@ -25,7 +25,6 @@ Newest entry first. Every session ends by adding one entry here.
 
 ## Open questions
 - Which LLM provider and key for the personal project? Not needed until Phase 2 (ADR 0007).
-- Push to GitHub: `origin` is `aman99dex/Agentic_Memory`. CI runs on the first push.
 
 ---
 
