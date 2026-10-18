@@ -3,8 +3,11 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phase:** 0 done. **Next: Phase 1, storage and plain retrieval.**
-- **Branch:** `main` (Phase 0 merged via PR #1, CI green)
+- **Phase:** 1 in progress on branch `phase-1-storage`.
+- **Done in Phase 1:** schema (`turns`, `memories`, embeddings, HNSW), `Embedder`,
+  filtered-HNSW trap test. Lessons 1.1–1.6 taught in chat.
+- **Next:** tsvector + GIN (lesson 1.7), RRF written by Aman, `MemoryStore`, migration
+  runner, `docs/learn/phase-1.md`.
 
 ## Next session: Phase 1 checklist
 1. New branch `phase-1-storage`.
@@ -22,6 +25,22 @@ Newest entry first. Every session ends by adding one entry here.
 6. Add `fastembed` and wrap it in an `Embedder` (ADR 0006).
 7. Write `docs/learn/phase-1.md`: RRF, why hybrid search wins on names and IDs, and the
    iterative-scan result.
+
+## 2026-10-18: Phase 1, part 1
+**Done**
+- `migrations/0001_init.sql`: `turns` (occurred_at + created_at), `memories`
+  (valid_from/valid_to/superseded_by, source_turn_ids), `vector(384)` + `embedding_model`
+  on both, HNSW (m=16, ef_construction=64) with cosine ops.
+- `Embedder` over fastembed 0.9.0 / bge-small (384 dims, unit-length vectors).
+- `tests/conftest.py` applies all migrations to a testcontainer;
+  `tests/test_filtered_hnsw.py` proves 100 users x 50 memories returns 0 of 10 rows
+  without iterative scan and 10 with it. 4/4 tests pass.
+
+**Learned / surprising**
+- fastembed's `query_embed` for bge-small adds no query instruction; BGE v1.5 says it is
+  optional. Try the prefix as a Phase 5 ablation.
+- Short facts that all start with "Aman ..." sit close together (cosine distance 0.49
+  vs 0.55), so vector-only ranking margins are thin. One more reason for hybrid search.
 
 ## Open questions
 - Which LLM provider and key for the personal project? Not needed until Phase 2 (ADR 0007).

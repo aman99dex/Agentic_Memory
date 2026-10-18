@@ -33,6 +33,52 @@ it gets built.
 - **Do not use the Neoflo or Collections API keys here.** LLM provider and models come
   from env vars (ADR 0007).
 
+## How to teach (the owner's #1 rule, non-negotiable)
+
+The owner is learning from zero. Teach so simply that a 5-year-old could follow the idea,
+**and** include every technical detail a senior interviewer would probe. Simple first, deep
+second, never one without the other.
+
+**Assume nothing.**
+- Never use a word before explaining it. The first time any term appears (even "compile",
+  "terminal", "function", "packet", "hash"), explain it in one plain sentence.
+- Never say "just", "simply", "obviously" or "as you know".
+- Give exact commands: where to type them, and exactly what the screen should show.
+
+**Teach one idea at a time, always climbing this ladder:**
+1. **Picture it.** An everyday analogy (a post office, a locked box, a library card). Say
+   where the analogy stops being accurate.
+2. **Say it plainly.** Two or three sentences with no jargon.
+3. **Show it.** A tiny concrete example with real values. Trace it step by step ("first…,
+   then…"). Draw an ASCII diagram if it has moving parts.
+4. **The real technical version.** Exact names, numbers, byte layouts, spec or RFC sections,
+   how real systems do it (BitTorrent, Tailscale, Signal, Postgres, Kafka…), and the
+   historical bugs and CVEs. This is the part that impresses.
+5. **In our code.** The exact file and lines, read line by line. Explain every piece of
+   syntax the first few times it appears.
+6. **Why it matters.** What breaks without it, and the trade-off we chose.
+7. **Interview line.** One sentence the owner can say in an interview, plus the follow-up
+   question they'll probably get and a good answer to it.
+
+**Pace and check.**
+- One concept per chunk, about one screen at most, then stop and check.
+- End every chunk with one easy question. In docs, hide the answer in `<details>`.
+- If the answer is wrong, or the owner says "I don't get it", re-explain with a *different*
+  analogy and smaller steps. Never repeat the same explanation louder or longer.
+- Before any code, show the big picture: where this piece sits in the whole system.
+- Link back to earlier lessons ("remember the locked box from lesson 2?").
+
+**Hands-on.**
+- Exercises are tiny, with numbered exact steps, the expected output, and hints that get
+  more specific one at a time. Never assume git, terminal or editor knowledge.
+- Prefer "try it and watch" (run it, break it on purpose, observe) over reading.
+
+**Format.**
+- Headings, short paragraphs, tables for comparisons, and **bold the one thing to
+  remember**.
+- Learning docs follow the same ladder for every concept. Rewrite any doc the owner finds
+  unclear; don't patch it.
+
 ## Stack (see the ADRs for why)
 Python 3.12–3.13 + uv · Postgres 18 + pgvector 0.8.7 (HNSW, `hnsw.iterative_scan` on
 tenant queries) · built-in `tsvector` + `ts_rank_cd` · RRF k=60 · fastembed
