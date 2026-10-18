@@ -20,3 +20,4 @@ it this way?"
 | [0008](0008-experimentation.md) | Offline paired evaluation first, in-house online A/B | Accepted |
 | [0009](0009-deploy-cloud-run-neon.md) | Cloud Run + Neon for the public deployment | Accepted |
 | [0010](0010-plain-sql-migrations.md) | Plain SQL migrations, no ORM | Accepted |
+| [0011](0011-keyword-query-and-then-or.md) | Keyword query: all words first, any word as a fallback | Accepted |
