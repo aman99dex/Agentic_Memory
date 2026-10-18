@@ -1,13 +1,22 @@
+import asyncio
+import sys
 from collections.abc import Iterator
-from pathlib import Path
 
 import psycopg
 import pytest
 from pgvector.psycopg import register_vector
 from testcontainers.community.postgres import PostgresContainer
 
+from agentic_memory.migrate import migrate
+
 IMAGE = "pgvector/pgvector:0.8.7-pg18"
-MIGRATIONS = Path(__file__).parent.parent / "migrations"
+
+
+def pytest_asyncio_loop_factories(config, item):
+    # psycopg's async mode can't use Windows' default (Proactor) event loop.
+    if sys.platform == "win32":
+        return {"selector": asyncio.SelectorEventLoop}
+    return {"default": asyncio.new_event_loop}
 
 
 @pytest.fixture(scope="session")
@@ -16,8 +25,7 @@ def db_url() -> Iterator[str]:
     with PostgresContainer(IMAGE, driver=None) as pg:
         url = pg.get_connection_url()
         with psycopg.connect(url, autocommit=True) as c:
-            for f in sorted(MIGRATIONS.glob("*.sql")):
-                c.execute(f.read_text())
+            migrate(c)
         yield url
 
 

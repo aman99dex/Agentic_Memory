@@ -3,28 +3,45 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phase:** 1 in progress on branch `phase-1-storage`.
-- **Done in Phase 1:** schema (`turns`, `memories`, embeddings, HNSW), `Embedder`,
-  filtered-HNSW trap test. Lessons 1.1–1.6 taught in chat.
-- **Next:** tsvector + GIN (lesson 1.7), RRF written by Aman, `MemoryStore`, migration
-  runner, `docs/learn/phase-1.md`.
+- **Phase:** 1 code complete on branch `phase-1-storage` (pushed). 17 tests, CI checks green
+  locally. **Next: open the PR for Phase 1, then start Phase 2 (the LangGraph write path).**
+- Lessons 1.1–1.11 are written up in `docs/learn/phase-1.md`.
 
-## Next session: Phase 1 checklist
-1. New branch `phase-1-storage`.
-2. `migrations/0001_init.sql` and the migration runner (ADR 0010). Tables:
-   - `turns` (raw rounds = the values)
-   - `memories` (facts = the keys and versioned state, with `source_turn_ids`,
-     `valid_from`/`valid_to`/`superseded_by`, `embedding_model`), per ADRs 0003 and 0004
-   - HNSW on the embeddings, GIN on the `tsvector` columns.
-3. A `MemoryStore` built on a psycopg async pool: `add`, `search_vector`,
-   `search_text`, `get`, `invalidate`.
-4. Hybrid search with RRF, k=60 (ADR 0005). Aman writes the RRF function himself; it's
-   about 15 lines.
-5. **Test the filtered-HNSW trap:** 100 users × 50 memories. Show that a `LIMIT 10`
-   without iterative scan comes up short and that iterative scan fixes it (ADR 0001).
-6. Add `fastembed` and wrap it in an `Embedder` (ADR 0006).
-7. Write `docs/learn/phase-1.md`: RRF, why hybrid search wins on names and IDs, and the
-   iterative-scan result.
+## Next session: start here
+1. Ask Aman whether to open the Phase 1 PR (`gh pr create` from `phase-1-storage`) and
+   check CI on GitHub. Merge only when Aman says.
+2. Phase 2, branch `phase-2-write-path`. Begin with the big picture of the write path,
+   then Lesson 2.1. Needs an LLM provider/key decision first (open question below);
+   never the Neoflo/Collections key.
+3. Phase 2 also needs a `turns` side in `MemoryStore` (`add_turn`) and a
+   `0002_*.sql` migration for anything new (0001 is applied and checksummed: don't edit it).
+
+## Open questions
+- Which LLM provider and key for the personal project? Needed at the start of Phase 2 (ADR 0007).
+
+---
+
+## 2026-10-18: Phase 1, part 2
+**Done**
+- Lesson 1.7: `tsv` generated columns + GIN indexes on both tables.
+- Lesson 1.8: `fusion.rrf` (k=60) + `tests/test_rrf.py`. Aman asked to see the answer
+  rather than write it; walked through it line by line.
+- Lesson 1.9: `MemoryStore` (`store.py`): add / get / invalidate / supersede (one
+  transaction) / search_vector (iterative scan, MATERIALIZED re-sort) / search_text /
+  hybrid search (gather + RRF) / `as_of`. `tests/test_store.py`, 6 tests.
+- ADR 0011: keyword query AND first, OR fallback.
+- Lesson 1.10: async + pool, measured (new conn 43 ms vs pool 4 ms; gather 0.42 s vs 2.1 s).
+- Lesson 1.11: `migrate.py` runner with SHA-256 checksums; conftest uses it;
+  `tests/test_migrate.py`, 3 tests. Local DB reset and migrated with the runner.
+- `docs/learn/phase-1.md` written.
+
+**Learned / surprising**
+- OR-semantics keyword search made RRF tie the right ID with a wrong one (no IDF in
+  `ts_rank_cd`). Strong motivation for the Phase 5 BM25 ablation.
+- psycopg async needs `SelectorEventLoop` on Windows; pytest-asyncio 1.4 sets it through
+  the `pytest_asyncio_loop_factories` hook.
+- Aman missed the pool-waves question first time; the elevator analogy worked. Aman also
+  didn't know why migrations are zero-padded (text vs number sort).
 
 ## 2026-10-18: Phase 1, part 1
 **Done**

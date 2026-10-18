@@ -122,11 +122,11 @@ weekends.
   basics.
 
 ### Phase 1: Storage and plain retrieval (week 1)
-- [ ] Schema and Alembic migration; HNSW index on `embedding`; GIN index on `tsvector`.
-- [ ] `MemoryStore` with `add`, `search_vector`, `search_text`, `get`, `invalidate`.
-- [ ] **Hybrid search with Reciprocal Rank Fusion** (k=60). Write it yourself; it's
+- [x] Schema and migration (plain SQL + runner, ADR 0010); HNSW index on `embedding`; GIN index on `tsvector`.
+- [x] `MemoryStore` with `add`, `search_vector`, `search_text`, `get`, `invalidate` (+ `supersede`, hybrid `search`, `as_of`).
+- [x] **Hybrid search with Reciprocal Rank Fusion** (k=60). Write it yourself; it's
       about 15 lines.
-- [ ] Tests run against a real Postgres via testcontainers.
+- [x] Tests run against a real Postgres via testcontainers.
 - **Learn:** RRF; why hybrid search beats vector-only on names, IDs and numbers.
 
 ### Phase 2: The write path in LangGraph (week 2)

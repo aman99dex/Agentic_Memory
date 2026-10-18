@@ -35,3 +35,13 @@ CREATE INDEX turns_embedding_hnsw    ON turns    USING hnsw (embedding vector_co
     WITH (m = 16, ef_construction = 64);
 CREATE INDEX memories_embedding_hnsw ON memories USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
+
+-- Exact words (ADR 0002). Postgres keeps tsv in sync with the text by itself.
+ALTER TABLE turns ADD COLUMN tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', user_text || ' ' || assistant_text)) STORED;
+ALTER TABLE memories ADD COLUMN tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+
+-- GIN: the index at the back of a book, word -> rows that contain it.
+CREATE INDEX turns_tsv_gin    ON turns    USING gin (tsv);
+CREATE INDEX memories_tsv_gin ON memories USING gin (tsv);
