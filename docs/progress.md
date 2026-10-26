@@ -3,27 +3,50 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phase:** 1 merged to `main` (PR #2). Phase 2 started on `phase-2-write-path` (cut from
-  the new main). **Uncommitted** work: ADR 0012, `migrations/0002_turn_content_hash.sql`,
-  `MemoryStore.add_turn`, its test, and a `test_migrate.py` fix. 18 tests pass, CI checks clean.
-- Aman wants to **restart Phase 2 from the top** next session (re-teach the big picture
-  and Lesson 2.1 before moving on).
+- **Phase:** 1 merged. **Phase 2 done and on `main`**: the write path works end to end
+  (`write_path.py`: extract -> reconcile -> apply, idempotent `add_turn`, crash-safe retry).
+  Verified with real Postgres + real Haiku 5.5: `tests/test_write_path.py` (2 tests) and a
+  seven-turn run over a fictional user's life; 20 tests pass, ruff/mypy clean.
+- **Workflow (Aman, 2026-10-26): build everything end to end first, teach last.** No lessons
+  or check questions while building; concepts go into `docs/learn/phase-N.md`.
 
 ## Next session: start here
-**2026-10-26: Aman changed the order: build the whole thing end to end first, teach last.**
-No lessons or check questions while building; keep notes in `docs/learn/phase-N.md`.
-1. Build the Phase 2 graph: `extract` node, then `reconcile` node, then the action step
-   (ADD / UPDATE / INVALIDATE / NOOP). Verify LangGraph 1.x and `init_chat_model` APIs
-   against current docs first; add the deps.
-2. Then run the write path end to end on real data before moving on.
-3. Write each concept into `docs/learn/phase-2.md` as it lands. Teaching starts once the
-   system works end to end. Pending checks: Lesson 2.0 (which label for "Ravi still lives
-   in Pune"? NOOP) and Lesson 2.1 ("ok thanks" twice in `s1` at 10:00 and 10:05: two rows,
-   because occurred_at differs).
+1. Phase 3: the read path (query rewrite, time-range filter via `as_of`, context packing that
+   returns the source turns, per ADR 0003). See `plan.md` Phase 3.
+2. Then Phase 4 (FastAPI + MCP) so the whole thing runs end to end as a service.
+3. Append each concept to `docs/learn/phase-N.md` as it lands (`phase-3.md` does not exist yet).
+4. Teaching pass once it works end to end. Pending checks: see the `<details>` in
+   `docs/learn/phase-2.md`.
+5. Known gaps to consider: turns must be ingested in time order (CHECK on `valid_to >=
+   valid_from`); the write path has no concurrency guard across two simultaneous turns of
+   one user (two near-identical facts could both ADD).
 
 ## Open questions
 - None. LLM: Aman's personal Anthropic key is in `.env` (gitignored, verified working with a
   1-token call), Haiku 5.5 for every role (ADR 0012). Judge for Phase 5 still pinned (ADR 0007).
+
+---
+
+## 2026-10-26: Phase 2, the write path works
+**Done**
+- Committed and pushed Phase 2 part 1 (`9d32da7`) straight to `main` (owner bypass works).
+- Added langgraph 1.2.17, langchain 1.4.7, langchain-anthropic 1.7.6; verified
+  `init_chat_model`, `StateGraph.add_conditional_edges`, `with_structured_output` signatures
+  in the installed packages.
+- `write_path.py`: `extract` (structured `Facts`), `reconcile` (top-5 hybrid search +
+  `Decision`, target guarded by `_check`), `apply` (add / supersede / invalidate), two
+  conditional edges, `ingest_turn`. `store.turn_has_memories` for crash-safe retry.
+- ADR 0013. `docs/learn/phase-2.md` (sections 2.0-2.7). Plan Phase 2 boxes ticked.
+- Ran 7 turns of a fictional user through Haiku 5.5 and fixed 4 prompt flaws (see
+  `docs/learn/phase-2.md` 2.7).
+
+**Learned / surprising**
+- `claude-haiku-5-5` rejects `temperature` (HTTP 400), so `make_llm` sends none. Anthropic API
+  behaviour, not a LangChain bug.
+- `uv run pytest` fails here ("uv trampoline failed to canonicalize script path"); use
+  `uv run --env-file .env python -m pytest`.
+- `INVALIDATE` stores nothing, so a replacement fact labelled INVALIDATE is lost. The
+  prompt now says UPDATE for "new truth replaces old".
 
 ---
 

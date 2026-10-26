@@ -97,6 +97,18 @@ class MemoryStore:
         assert row is not None
         return int(row[0]), False
 
+    async def turn_has_memories(self, user_id: str, turn_id: int) -> bool:
+        """True if any fact was written from this turn (a crash before that leaves it False)."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """SELECT EXISTS (SELECT 1 FROM memories
+                          WHERE user_id = %s AND %s = ANY(source_turn_ids))""",
+                (user_id, turn_id),
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        return bool(row[0])
+
     async def add(
         self, user_id: str, content: str, source_turn_ids: Sequence[int], valid_from: datetime
     ) -> int:

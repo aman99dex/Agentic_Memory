@@ -130,14 +130,14 @@ weekends.
 - **Learn:** RRF; why hybrid search beats vector-only on names, IDs and numbers.
 
 ### Phase 2: The write path in LangGraph (week 2)
-- [ ] `extract` node: an LLM turns a conversation turn into candidate facts, as
+- [x] `extract` node: an LLM turns a conversation turn into candidate facts, as
       structured output (Pydantic).
-- [ ] `reconcile` node: for each candidate, fetch the top-k similar memories. The LLM
+- [x] `reconcile` node: for each candidate, fetch the top-k similar memories. The LLM
       decides `ADD | UPDATE | INVALIDATE | NOOP`, and the edge is followed
       deterministically.
-- [ ] Changes to existing facts keep history: set `valid_to` and `superseded_by` on the
+- [x] Changes to existing facts keep history: set `valid_to` and `superseded_by` on the
       old row.
-- [ ] Idempotency: re-ingesting the same message doesn't duplicate memories (store a
+- [x] Idempotency: re-ingesting the same message doesn't duplicate memories (store a
       hash of the source message).
 - **Learn:** LangGraph state, conditional edges and checkpointers; the Mem0 paper's
       update operations, and where this design differs from it.

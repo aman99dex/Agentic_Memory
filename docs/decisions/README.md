@@ -22,3 +22,4 @@ it this way?"
 | [0010](0010-plain-sql-migrations.md) | Plain SQL migrations, no ORM | Accepted |
 | [0011](0011-keyword-query-and-then-or.md) | Keyword query: all words first, any word as a fallback | Accepted |
 | [0012](0012-haiku-for-every-role-for-now.md) | Haiku for every LLM role during development | Accepted |
+| [0013](0013-labels-not-text-and-guarded-targets.md) | Reconcile LLM returns a label + target, code guards the target | Accepted |
