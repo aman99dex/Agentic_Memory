@@ -3,21 +3,42 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phase:** 1 code complete on branch `phase-1-storage` (pushed). 17 tests, CI checks green
-  locally. **Next: open the PR for Phase 1, then start Phase 2 (the LangGraph write path).**
-- Lessons 1.1–1.11 are written up in `docs/learn/phase-1.md`.
+- **Phase:** 1 merged to `main` (PR #2). Phase 2 started on `phase-2-write-path` (cut from
+  the new main). **Uncommitted** work: ADR 0012, `migrations/0002_turn_content_hash.sql`,
+  `MemoryStore.add_turn`, its test, and a `test_migrate.py` fix. 18 tests pass, CI checks clean.
+- Aman wants to **restart Phase 2 from the top** next session (re-teach the big picture
+  and Lesson 2.1 before moving on).
 
 ## Next session: start here
-1. Ask Aman whether to open the Phase 1 PR (`gh pr create` from `phase-1-storage`) and
-   check CI on GitHub. Merge only when Aman says.
-2. Phase 2, branch `phase-2-write-path`. Begin with the big picture of the write path,
-   then Lesson 2.1. Needs an LLM provider/key decision first (open question below);
-   never the Neoflo/Collections key.
-3. Phase 2 also needs a `turns` side in `MemoryStore` (`add_turn`) and a
-   `0002_*.sql` migration for anything new (0001 is applied and checksummed: don't edit it).
+**2026-10-26: Aman changed the order: build the whole thing end to end first, teach last.**
+No lessons or check questions while building; keep notes in `docs/learn/phase-N.md`.
+1. Build the Phase 2 graph: `extract` node, then `reconcile` node, then the action step
+   (ADD / UPDATE / INVALIDATE / NOOP). Verify LangGraph 1.x and `init_chat_model` APIs
+   against current docs first; add the deps.
+2. Then run the write path end to end on real data before moving on.
+3. Write each concept into `docs/learn/phase-2.md` as it lands. Teaching starts once the
+   system works end to end. Pending checks: Lesson 2.0 (which label for "Ravi still lives
+   in Pune"? NOOP) and Lesson 2.1 ("ok thanks" twice in `s1` at 10:00 and 10:05: two rows,
+   because occurred_at differs).
 
 ## Open questions
-- Which LLM provider and key for the personal project? Needed at the start of Phase 2 (ADR 0007).
+- None. LLM: Aman's personal Anthropic key is in `.env` (gitignored, verified working with a
+  1-token call), Haiku 5.5 for every role (ADR 0012). Judge for Phase 5 still pinned (ADR 0007).
+
+---
+
+## 2026-10-18: Phase 2, part 1
+**Done**
+- Opened and merged the Phase 1 PR (#2). `main` has a ruleset that blocks updates except
+  for bypass actors, so Aman merges.
+- ADR 0012: Haiku 5.5 for every LLM role during development.
+- `.env` with `ANTHROPIC_API_KEY` and the three model vars.
+- Lesson 2.0 (write-path big picture) and Lesson 2.1 (idempotent `add_turn`).
+
+**Learned / surprising**
+- A single INSERT ... ON CONFLICT + SELECT statement can miss a concurrent winner's row
+  (one snapshot per statement), so the lookup is a second statement.
+- Aman first answered "add_turn" to the reconcile question; the contacts-app table fixed it.
 
 ---
 

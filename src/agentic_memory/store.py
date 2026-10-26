@@ -1,6 +1,8 @@
 """MemoryStore: the only code that talks SQL about memories (ADRs 0001-0005)."""
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -52,6 +54,48 @@ class MemoryStore:
         # The model is CPU work that would freeze every other request; run it on a thread.
         (vector,) = await asyncio.to_thread(self._embedder.embed, [text])
         return np.array(vector, dtype=np.float32)
+
+    async def add_turn(
+        self,
+        user_id: str,
+        session_id: str,
+        user_text: str,
+        assistant_text: str,
+        occurred_at: datetime,
+    ) -> tuple[int, bool]:
+        """Store one round. Returns (turn id, True if new). The same round twice is stored once."""
+        # JSON keeps field boundaries: ("ab", "c") and ("a", "bc") must not hash the same.
+        fingerprint = json.dumps([session_id, occurred_at.isoformat(), user_text, assistant_text])
+        content_hash = hashlib.sha256(fingerprint.encode()).hexdigest()
+        embedding = await self._embed(f"{user_text} {assistant_text}")
+        async with self._pool.connection() as conn:
+            # The unique index, not a check-then-insert, is what makes this safe under races.
+            cur = await conn.execute(
+                """INSERT INTO turns (user_id, session_id, user_text, assistant_text,
+                                      occurred_at, content_hash, embedding, embedding_model)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (user_id, content_hash) DO NOTHING RETURNING id""",
+                (
+                    user_id,
+                    session_id,
+                    user_text,
+                    assistant_text,
+                    occurred_at,
+                    content_hash,
+                    embedding,
+                    self._embedder.model_name,
+                ),
+            )
+            if row := await cur.fetchone():
+                return int(row[0]), True
+            # A repeat: DO NOTHING returned no row. A fresh statement sees the first copy.
+            cur = await conn.execute(
+                "SELECT id FROM turns WHERE user_id = %s AND content_hash = %s",
+                (user_id, content_hash),
+            )
+            row = await cur.fetchone()
+        assert row is not None
+        return int(row[0]), False
 
     async def add(
         self, user_id: str, content: str, source_turn_ids: Sequence[int], valid_from: datetime

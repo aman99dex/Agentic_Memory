@@ -77,3 +77,12 @@ async def test_keyword_side_matches_any_word(store, user):
     mid = await store.add(user, "Aman lives in Pune", [1], OCT)
     # 'city' is not in the fact; with AND-semantics this found nothing (Lesson 1.7)
     assert await store.search_text(user, "which city do I live in?") == [mid]
+
+
+async def test_add_turn_is_idempotent(store, user):
+    first = await store.add_turn(user, "s1", "I moved to Pune", "Nice!", OCT)
+    again = await store.add_turn(user, "s1", "I moved to Pune", "Nice!", OCT)
+    other_session = await store.add_turn(user, "s2", "I moved to Pune", "Nice!", OCT)
+
+    assert first[1] is True and again == (first[0], False)  # same round: stored once
+    assert other_session[1] is True  # same words in another session is a different round

@@ -35,6 +35,11 @@ it gets built.
 
 ## How to teach (the owner's #1 rule, non-negotiable)
 
+**Order of work (changed 2026-10-26): build first, teach last.** Get the system working end
+to end before any teaching. While building, don't stop for lessons or check questions;
+append the concepts to `docs/learn/phase-N.md` as you go (written to the ladder below, so
+it can be taught from later). Once it works end to end, teach from those notes.
+
 The owner is learning from zero. Teach so simply that a 5-year-old could follow the idea,
 **and** include every technical detail a senior interviewer would probe. Simple first, deep
 second, never one without the other.

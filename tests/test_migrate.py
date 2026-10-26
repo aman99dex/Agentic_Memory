@@ -4,7 +4,7 @@ import psycopg
 import pytest
 from psycopg.conninfo import make_conninfo
 
-from agentic_memory.migrate import migrate
+from agentic_memory.migrate import MIGRATIONS, migrate
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def tables(conn):
 
 
 def test_real_migrations_apply_once(fresh):
-    assert migrate(fresh) == ["0001_init.sql"]
+    assert migrate(fresh) == sorted(p.name for p in MIGRATIONS.glob("*.sql"))
     assert {"turns", "memories", "schema_migrations"} <= tables(fresh)
     assert migrate(fresh) == []  # second run: nothing to do
 
