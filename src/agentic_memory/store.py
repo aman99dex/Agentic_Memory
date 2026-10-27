@@ -30,6 +30,15 @@ AND_TSQUERY = "websearch_to_tsquery('english', %(query)s)"
 OR_TSQUERY = """(SELECT string_agg(quote_literal(w), ' | ')
     FROM unnest(tsvector_to_array(to_tsvector('english', %(query)s))) w)::tsquery"""
 
+# Every version of the given facts: walk superseded_by forwards and backwards (ADR 0004).
+CHAIN = """WITH RECURSIVE chain AS (
+    SELECT id FROM memories WHERE user_id = %(u)s AND id = ANY(%(ids)s)
+    UNION
+    SELECT m.id FROM memories m, chain c
+    WHERE m.user_id = %(u)s
+      AND (m.superseded_by = c.id
+           OR m.id = (SELECT superseded_by FROM memories WHERE id = c.id)))"""
+
 COLUMNS = "id, user_id, content, source_turn_ids, valid_from, valid_to, superseded_by, created_at"
 
 
@@ -43,6 +52,15 @@ class Memory:
     valid_to: datetime | None
     superseded_by: int | None
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class Turn:
+    id: int
+    session_id: str
+    user_text: str
+    assistant_text: str
+    occurred_at: datetime
 
 
 class MemoryStore:
@@ -96,6 +114,18 @@ class MemoryStore:
             row = await cur.fetchone()
         assert row is not None
         return int(row[0]), False
+
+    async def get_turns(self, user_id: str, turn_ids: Sequence[int]) -> list[Turn]:
+        """The original rounds, in the order asked for. Ids that aren't this user's are skipped."""
+        async with self._pool.connection() as conn:
+            cur = conn.cursor(row_factory=class_row(Turn))
+            await cur.execute(
+                """SELECT id, session_id, user_text, assistant_text, occurred_at
+                   FROM turns WHERE user_id = %s AND id = ANY(%s)""",
+                (user_id, list(turn_ids)),
+            )
+            rows = {t.id: t for t in await cur.fetchall()}
+        return [rows[i] for i in turn_ids if i in rows]
 
     async def turn_has_memories(self, user_id: str, turn_id: int) -> bool:
         """True if any fact was written from this turn (a crash before that leaves it False)."""
@@ -192,6 +222,63 @@ class MemoryStore:
             if not await self._close(conn, user_id, old_id, valid_from, new_id):
                 raise LookupError(f"memory {old_id} is not a current fact of {user_id}")
             return new_id
+
+    async def history(self, user_id: str, memory_id: int) -> list[Memory]:
+        """Every version of one fact, oldest first (the chain linked by superseded_by)."""
+        async with self._pool.connection() as conn:
+            cur = conn.cursor(row_factory=class_row(Memory))
+            await cur.execute(
+                f"""{CHAIN} SELECT {COLUMNS} FROM memories
+                    WHERE id IN (SELECT id FROM chain) ORDER BY valid_from, id""",  # noqa: S608
+                {"u": user_id, "ids": [memory_id]},
+            )
+            return await cur.fetchall()
+
+    async def forget(
+        self, user_id: str, memory_ids: Sequence[int] | None = None
+    ) -> tuple[int, int]:
+        """Hard delete (ADR 0004, 0014). Returns (memories, turns) deleted.
+
+        With ids: those facts, every older/newer version of them, the turns they came from,
+        and every other fact that came from those turns (their source words are gone).
+        With None: everything this user has.
+        """
+        params = {"u": user_id, "ids": list(memory_ids or [])}
+        async with self._pool.connection() as conn, conn.transaction():
+            if memory_ids is None:
+                mems = (
+                    await conn.execute("DELETE FROM memories WHERE user_id = %s", (user_id,))
+                ).rowcount
+                turns = (
+                    await conn.execute("DELETE FROM turns WHERE user_id = %s", (user_id,))
+                ).rowcount
+            else:
+                cur = await conn.execute(
+                    f"""{CHAIN} SELECT coalesce(array_agg(DISTINCT t), '{{}}'::bigint[])
+                        FROM memories m, unnest(m.source_turn_ids) t
+                        WHERE m.id IN (SELECT id FROM chain)""",  # noqa: S608
+                    params,
+                )
+                row = await cur.fetchone()
+                assert row is not None
+                turn_ids: list[int] = row[0]
+                # One statement: its snapshot still sees the chain while the rows are removed.
+                cur = await conn.execute(
+                    f"""{CHAIN} DELETE FROM memories WHERE user_id = %(u)s
+                        AND (id IN (SELECT id FROM chain)
+                             OR source_turn_ids && %(turns)s::bigint[])""",  # noqa: S608
+                    {**params, "turns": turn_ids},
+                )
+                mems = cur.rowcount
+                cur = await conn.execute(
+                    "DELETE FROM turns WHERE user_id = %s AND id = ANY(%s)", (user_id, turn_ids)
+                )
+                turns = cur.rowcount
+            await conn.execute(
+                "INSERT INTO deletions (user_id, memories, turns) VALUES (%s, %s, %s)",
+                (user_id, mems, turns),
+            )
+        return mems, turns
 
     async def search_vector(
         self, user_id: str, query: str, limit: int = 20, as_of: datetime | None = None

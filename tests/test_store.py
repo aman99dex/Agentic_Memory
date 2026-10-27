@@ -86,3 +86,38 @@ async def test_add_turn_is_idempotent(store, user):
 
     assert first[1] is True and again == (first[0], False)  # same round: stored once
     assert other_session[1] is True  # same words in another session is a different round
+
+
+async def test_history_lists_every_version_from_any_of_them(store, user):
+    a = await store.add(user, "Aman lives in Bangalore", [1], JAN)
+    b = await store.supersede(user, a, "Aman lives in Pune", [2], MAR)
+    c = await store.supersede(user, b, "Aman lives in Mumbai", [3], OCT)
+    for start in (a, b, c):
+        assert [m.id for m in await store.history(user, start)] == [a, b, c]
+    assert await store.history("someone-else", a) == []
+
+
+async def test_forget_removes_the_chain_its_turns_and_siblings_and_only_those(store, user):
+    t1, _ = await store.add_turn(user, "s", "I live in Bangalore, my phone is 555", "ok", JAN)
+    t2, _ = await store.add_turn(user, "s", "I moved to Pune", "ok", OCT)
+    t3, _ = await store.add_turn(user, "s", "I like tea", "ok", OCT)
+    old = await store.add(user, "Aman lives in Bangalore", [t1], JAN)
+    sibling = await store.add(user, "Aman's phone is 555", [t1], JAN)  # same turn as `old`
+    new = await store.supersede(user, old, "Aman lives in Pune", [t2], OCT)
+    tea = await store.add(user, "Aman likes tea", [t3], OCT)
+
+    assert await store.forget(user, [new]) == (3, 2)  # old, sibling, new; turns t1, t2
+
+    assert [await store.get(user, i) for i in (old, sibling, new)] == [None, None, None]
+    assert (await store.get(user, tea)).content == "Aman likes tea"
+    assert [t.id for t in await store.get_turns(user, [t1, t2, t3])] == [t3]
+
+
+async def test_forget_everything_for_one_user_leaves_others_alone(store, user):
+    other = f"{user}-other"
+    t, _ = await store.add_turn(user, "s", "hello", "hi", JAN)
+    await store.add(user, "fact", [t], JAN)
+    keep = await store.add(other, "keep me", [1], JAN)
+
+    assert await store.forget(user) == (1, 1)
+    assert (await store.get(other, keep)).content == "keep me"

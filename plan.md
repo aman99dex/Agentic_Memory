@@ -143,24 +143,24 @@ weekends.
       update operations, and where this design differs from it.
 
 ### Phase 3: The read path and context packing (week 3)
-- [ ] Query rewrite for questions that refer back ("what did she say about it?").
+- [x] Query rewrite for questions that refer back ("what did she say about it?").
 - [ ] Rerank: `score = rrf * (1 + importance) * recency_decay(last_accessed_at)`.
       Expose the weights in config.
-- [ ] A **token-budget packer**: greedily fill N tokens, deduplicate, keep current
-      facts over superseded ones.
+- [x] A **token-budget packer**: greedily fill N tokens, deduplicate, keep current
+      facts over superseded ones. (Done: facts first, then source turns, deduped by id.)
 - [ ] Forgetting: a nightly job decays importance and archives memories that are cold
       and low-importance. Archived memories are not deleted.
 - **Learn:** the "lost in the middle" problem and why the order of packed context
       matters.
 
 ### Phase 4: Interfaces (week 4)
-- [ ] REST API: `POST /memories:ingest`, `POST /memories:search`,
+- [x] REST API: `POST /memories:ingest`, `POST /memories:search`,
       `GET /memories/{id}/history`. Multi-tenant through `user_id` and `namespace`.
-- [ ] **MCP server** exposing three tools: `remember`, `recall` and `forget`.
+- [x] **MCP server** exposing three tools: `remember`, `recall` and `forget`.
 - [ ] Demo: add it to Claude Code (`claude mcp add`) and record a 60-second GIF of it
       remembering across sessions.
 - [ ] A small Python SDK: `Memory(user_id).add(...)` and `.search(...)`.
-- [ ] API-key auth on the REST API. Validate input at the boundary.
+- [x] API-key auth on the REST API. Validate input at the boundary.
 
 ### Phase 5: Evaluation, the part that sells it (weeks 5–6)
 - [ ] An `eval/` harness for **LongMemEval** (the 500-question `_s` split) and

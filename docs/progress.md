@@ -3,27 +3,54 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phase:** 1 merged. **Phase 2 done and on `main`**: the write path works end to end
-  (`write_path.py`: extract -> reconcile -> apply, idempotent `add_turn`, crash-safe retry).
-  Verified with real Postgres + real Haiku 5.5: `tests/test_write_path.py` (2 tests) and a
-  seven-turn run over a fictional user's life; 20 tests pass, ruff/mypy clean.
+- **Phases 0-2 on `main`. Phases 3 (core) and 4 are built, tested and uncommitted.**
+  The system now works end to end: ingest a turn, it becomes versioned facts, recall returns
+  current facts + their source turns under a token budget, over REST and MCP, with hard
+  delete. Verified live: `curl` against the running server, and an MCP client over stdio.
+  Tests: real Postgres + real Haiku 5.5; ruff/mypy clean.
 - **Workflow (Aman, 2026-10-26): build everything end to end first, teach last.** No lessons
-  or check questions while building; concepts go into `docs/learn/phase-N.md`.
+  or check questions while building; concepts go into `docs/learn/phase-N.md`
+  (phase-2, 3 and 4 are written and waiting to be taught).
+- Not built on purpose: Phase 3 rerank (importance/recency) and decay-forgetting (need new
+  columns; do after Phase 5 shows whether ranking is the bottleneck), the Python SDK, and the
+  demo GIF.
 
 ## Next session: start here
-1. Phase 3: the read path (query rewrite, time-range filter via `as_of`, context packing that
-   returns the source turns, per ADR 0003). See `plan.md` Phase 3.
-2. Then Phase 4 (FastAPI + MCP) so the whole thing runs end to end as a service.
-3. Append each concept to `docs/learn/phase-N.md` as it lands (`phase-3.md` does not exist yet).
-4. Teaching pass once it works end to end. Pending checks: see the `<details>` in
-   `docs/learn/phase-2.md`.
-5. Known gaps to consider: turns must be ingested in time order (CHECK on `valid_to >=
-   valid_from`); the write path has no concurrency guard across two simultaneous turns of
-   one user (two near-identical facts could both ADD).
+1. Ask whether to commit + push the Phase 3/4 work (Aman's pattern: push to `main` directly).
+2. Phase 5: evaluation (LongMemEval/LoCoMo harness, paired comparisons per ADR 0008, results as
+   JSON in `eval/results/`, never hand-typed numbers). Read plan.md Phase 5 and ADRs 0007/0008.
+   The judge is pinned (ADR 0007).
+3. Phase 6: deploy (ADR 0009: Cloud Run + Neon), CI/CD.
+4. Teaching pass over `docs/learn/phase-2..4.md` once Aman says the system is good enough.
+5. Known gaps: turns must be ingested in time order; two simultaneous turns of one user could
+   both ADD near-identical facts; one shared API key (no per-tenant keys yet); `recall` does one
+   LLM call per query for rewrite (skip it when `context` is empty and no time words if cost
+   matters).
 
 ## Open questions
 - None. LLM: Aman's personal Anthropic key is in `.env` (gitignored, verified working with a
   1-token call), Haiku 5.5 for every role (ADR 0012). Judge for Phase 5 still pinned (ADR 0007).
+
+---
+
+## 2026-10-27: Phases 3 and 4, the whole thing runs
+**Done**
+- `read_path.py`: `recall` = LLM query rewrite (+ `as_of` extraction) -> hybrid search -> expand
+  to source turns -> `pack` to a token budget (`mode` facts/turns/both). Facts print their `[id]`.
+- `store.history` (version chain) and `store.forget` (hard delete + cascade + `deletions` row,
+  migration 0003); `get_turns`.
+- `service.py` (`MemoryService`, `open_service`), `api.py` (FastAPI, API key, bounded inputs),
+  `mcp_server.py` (remember/recall/forget, one fixed user), `serve.py`.
+- ADR 0014. `docs/learn/phase-3.md`, `phase-4.md`. README quickstart. `.env.example`.
+- Live checks: server on :8000 with `curl` (401 without key; ingest -> UPDATE closed the old
+  city; search returned facts + turns); MCP client over stdio (list tools, remember, recall,
+  forget, recall again).
+
+**Learned / surprising**
+- psycopg sends small Python ints as `smallint[]`; comparing with `bigint[]` needs `::bigint[]`.
+- `forget` cascades: two facts from one message are both erased with it (by design, ADR 0014).
+- mcp 2.3 `CallToolResult.is_error` (snake_case); `Context.request_context.lifespan_context`.
+- `docker` isn't running on a new day; start Docker Desktop before tests.
 
 ---
 
