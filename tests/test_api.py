@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -67,6 +68,19 @@ async def test_bad_input_is_rejected_at_the_boundary(store):
             await post("/memories:search", user_id="u", query="q", budget=10**9)
         ).status_code == 422
         assert (await c.delete("/memories?user_id=u", headers=KEY)).status_code == 422  # no ids
+
+
+async def test_search_with_rewrite_false_finds_facts_without_any_llm(store):
+    user = f"user-{uuid.uuid4().hex[:8]}"
+    await store.add(user, "The user lives in Pune.", [1], datetime(2026, 1, 1, tzinfo=UTC))
+    async with await client(MemoryService(store, NoLLM(), NoLLM())) as c:
+        r = await c.post(
+            "/memories:search",
+            json={"user_id": user, "query": "Pune", "rewrite": False, "mode": "facts"},
+            headers=KEY,
+        )
+    assert r.status_code == 200
+    assert "lives in Pune" in r.json()["text"] and r.json()["search_text"] == "Pune"
 
 
 def test_the_api_refuses_to_start_without_a_key(monkeypatch):

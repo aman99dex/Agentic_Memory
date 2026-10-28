@@ -3,14 +3,16 @@
 from collections.abc import Sequence
 
 
-def rrf(rankings: Sequence[Sequence[int]], k: int = 60) -> list[int]:
-    """Merge several ranked lists of row ids into one, best first.
-
-    Each id earns 1 / (k + rank) from every list it appears in (rank starts at 1),
-    and the points are added up.
-    """
+def rrf_scores(rankings: Sequence[Sequence[int]], k: int = 60) -> dict[int, float]:
+    """Each id earns 1 / (k + rank) from every list it appears in (rank starts at 1)."""
     scores: dict[int, float] = {}
     for ranking in rankings:
         for rank, doc_id in enumerate(ranking, start=1):
             scores[doc_id] = scores.get(doc_id, 0.0) + 1 / (k + rank)
+    return scores
+
+
+def rrf(rankings: Sequence[Sequence[int]], k: int = 60) -> list[int]:
+    """Merge several ranked lists of row ids into one, best first."""
+    scores = rrf_scores(rankings, k)
     return sorted(scores, key=scores.__getitem__, reverse=True)

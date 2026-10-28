@@ -13,7 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.embedder import Embedder
 from agentic_memory.store import MemoryStore
-from agentic_memory.write_path import build_graph, ingest_turn, make_llm
+from agentic_memory.write_path import Decision, Facts, build_graph, ingest_turn, make_llm
 
 pytestmark = pytest.mark.skipif(
     "ANTHROPIC_API_KEY" not in os.environ, reason="needs a real LLM key (run with --env-file .env)"
@@ -77,3 +77,32 @@ async def test_same_turn_twice_and_chit_chat_add_nothing(store, graph, user):
     assert await ingest_turn(store, graph, *args) == []  # exact repeat: skipped
     await ingest_turn(store, graph, user, "s1", "ok thanks", "You're welcome!", MAR)
     assert await count(store, user) == stored
+
+
+class Stub:
+    """A model that answers with a fixed value, to test our code's rules without an LLM."""
+
+    def __init__(self, answer):
+        self._answer = answer
+
+    def with_structured_output(self, _schema):
+        return self
+
+    async def ainvoke(self, _prompt):
+        return self._answer
+
+
+async def test_two_facts_replacing_the_same_old_fact_keep_both(store, user):
+    old = await store.add(user, "The user is considering a Sony camera.", [1], JAN)
+    facts = Facts(facts=["The user bought a Sony camera.", "The user shoots landscapes."])
+    graph = build_graph(store, Stub(facts), Stub(Decision(action="UPDATE", memory_id=old)))
+
+    steps = await ingest_turn(
+        store, graph, user, "s", "I bought the Sony, I shoot landscapes", "", OCT
+    )
+
+    assert [s["action"] for s in steps] == ["UPDATE", "UPDATE"]  # no crash on the second one
+    assert sorted(m.content for m in await store.search(user, "camera landscapes")) == [
+        "The user bought a Sony camera.",
+        "The user shoots landscapes.",
+    ]

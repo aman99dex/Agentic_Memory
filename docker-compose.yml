@@ -12,5 +12,26 @@ services:
       interval: 2s
       retries: 15
 
+  # `docker compose up` runs everything: database, then the migrations once, then the API.
+  # (`docker compose up -d db` alone is still what local development and the tests use.)
+  migrate:
+    build: .
+    command: ["python", "-m", "agentic_memory.migrate"]
+    environment:
+      DATABASE_URL: postgresql://mem:mem@db:5432/mem
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    build: .
+    env_file:
+      - path: .env  # ANTHROPIC_API_KEY, API_KEY and the *_MODEL variables
+        required: false
+    environment:
+      DATABASE_URL: postgresql://mem:mem@db:5432/mem
+    ports: ["8000:8000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
 volumes:
   pgdata:

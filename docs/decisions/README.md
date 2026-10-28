@@ -24,3 +24,7 @@ it this way?"
 | [0012](0012-haiku-for-every-role-for-now.md) | Haiku for every LLM role during development | Accepted |
 | [0013](0013-labels-not-text-and-guarded-targets.md) | Reconcile LLM returns a label + target, code guards the target | Accepted |
 | [0014](0014-one-service-two-interfaces.md) | One service, two thin interfaces; forget by id; fixed user over MCP | Accepted |
+| [0015](0015-eval-harness-choices.md) | LongMemEval harness: official prompts, cached calls, fair comparison rules | Accepted |
+| [0016](0016-use-based-importance-and-archiving.md) | Importance comes from use; rerank by importance and recency; forgetting archives, never deletes | Accepted |
+| [0017](0017-locomo-as-a-second-benchmark.md) | LoCoMo as a second benchmark, converted into the LongMemEval shape | Accepted |
+| [0018](0018-telemetry-load-test-and-retrieval-only-search.md) | OpenTelemetry without content; load test separates the LLM from retrieval | Accepted |

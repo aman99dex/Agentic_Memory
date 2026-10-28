@@ -1,0 +1,82 @@
+{
+ "name": "smoke-1",
+ "config": {
+  "dataset": "longmemeval_s_cleaned",
+  "n": 1,
+  "seed": 0,
+  "systems": [
+   "full",
+   "rag",
+   "ours"
+  ],
+  "budget_tokens": 2000,
+  "models": {
+   "extract": "anthropic:claude-haiku-5-5",
+   "query": "anthropic:claude-haiku-5-5",
+   "answer": "anthropic:claude-haiku-5-5",
+   "judge": "anthropic:claude-sonnet-5-5"
+  },
+  "judge_is_official": false,
+  "ingest_key": "b099dc8f614bb41d",
+  "git": "18559ec",
+  "llm_calls": {
+   "extract": {
+    "cached": 0,
+    "fresh": 0
+   },
+   "query": {
+    "cached": 1,
+    "fresh": 0
+   },
+   "answer": {
+    "cached": 0,
+    "fresh": 3
+   },
+   "judge": {
+    "cached": 0,
+    "fresh": 3
+   }
+  }
+ },
+ "rows": [
+  {
+   "question_id": "7e974930",
+   "question_type": "knowledge-update",
+   "system": "full",
+   "correct": true,
+   "error": null,
+   "hypothesis": "**Relevant notes:**\n- 2023-04-11: Downtown Farmers Market visits on March 18 ($220) and May 6 ($350).\n- 2023-09-30: \"I earned $420 at the Downtown Farmers Market on my most recent visit.\"\n\n**Answer:** You earned $420 at the Downtown Farmers Market on your most recent visit, according to your September 30 message. The notes don't record any later visits.",
+   "judge_reply": "yes",
+   "context_tokens": 117658,
+   "retrieval_seconds": 0.0,
+   "evidence_recall": 1.0,
+   "wall_seconds": 6.46920189994853
+  },
+  {
+   "question_id": "7e974930",
+   "question_type": "knowledge-update",
+   "system": "ours",
+   "correct": true,
+   "error": null,
+   "hypothesis": "**Relevant notes:**\n- [386] \"The user earned $420 in sales at the Downtown Farmers Market on their most recent visit (before 2023-09-30).\" This was recorded in the 2023-09-30 conversation.\n- [169] and [166] list earlier Downtown Farmers Market earnings of $350 (May 6, 2023) and $220 (March 18, 2023), but the notes describe those as earlier visits.\n\n**Reasoning:** The notes identify the $420 visit as the most recent one at the Downtown Farmers Market, and the other two entries are older.\n\n**Answer:** You earned $420 in sales at the Downtown Farmers Market on your most recent visit. The notes don't give the exact date of that visit, only that it was before September 30, 2023.",
+   "judge_reply": "Yes",
+   "context_tokens": 1922,
+   "retrieval_seconds": 0.8722567999502644,
+   "evidence_recall": 1.0,
+   "wall_seconds": 4.449564900016412
+  },
+  {
+   "question_id": "7e974930",
+   "question_type": "knowledge-update",
+   "system": "rag",
+   "correct": true,
+   "error": null,
+   "hypothesis": "The notes show you earned **$420** at the Downtown Farmers Market on your most recent visit. You mentioned this in your September 30, 2023 message.\n\nThe earlier notes list two other Downtown Farmers Market visits, on March 18 ($220) and May 6 ($350), but those are older. The notes don't record any visits after September 30, so $420 is the most recent figure they contain.",
+   "judge_reply": "yes",
+   "context_tokens": 1651,
+   "retrieval_seconds": 44.33066520001739,
+   "evidence_recall": 1.0,
+   "wall_seconds": 49.393114499980584
+  }
+ ]
+}

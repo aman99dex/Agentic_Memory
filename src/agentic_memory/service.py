@@ -10,15 +10,20 @@ from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.embedder import Embedder
+from agentic_memory.rank import Rank
 from agentic_memory.read_path import Recall, ReturnMode, recall
 from agentic_memory.store import Memory, MemoryStore
+from agentic_memory.telemetry import init_telemetry
 from agentic_memory.write_path import Step, build_graph, ingest_turn, make_llm
 
 
 class MemoryService:
-    def __init__(self, store: MemoryStore, extract_llm: Any, query_llm: Any) -> None:
+    def __init__(
+        self, store: MemoryStore, extract_llm: Any, query_llm: Any, rank: Rank | None = None
+    ) -> None:
         self.store = store
         self._query_llm = query_llm
+        self._rank = rank  # None: plain RRF order and recalls leave no trace (ADR 0016)
         self._graph = build_graph(store, extract_llm, extract_llm)
 
     async def ingest(
@@ -43,17 +48,24 @@ class MemoryService:
         context: Sequence[str] = (),
         budget: int = 1500,
         mode: ReturnMode = "both",
+        rewrite: bool = True,
     ) -> Recall:
-        return await recall(
+        now = datetime.now(UTC)
+        r = await recall(
             self.store,
             self._query_llm,
             user_id,
             query,
-            now=datetime.now(UTC),
+            now=now,
             context=context,
             budget=budget,
             mode=mode,
+            rank=self._rank,
+            rewrite=rewrite,
         )
+        if self._rank:  # being recalled is what makes a fact important
+            await self.store.touch(user_id, [m.id for m in r.memories], now, self._rank)
+        return r
 
     async def history(self, user_id: str, memory_id: int) -> list[Memory]:
         return await self.store.history(user_id, memory_id)
@@ -67,9 +79,13 @@ class MemoryService:
 @asynccontextmanager
 async def open_service() -> AsyncIterator[MemoryService]:
     """Everything is configured from the environment: DATABASE_URL, *_MODEL, ANTHROPIC_API_KEY."""
+    init_telemetry()
     async with AsyncConnectionPool(
         os.environ["DATABASE_URL"], configure=register_vector_async, open=False
     ) as pool:
         yield MemoryService(
-            MemoryStore(pool, Embedder()), make_llm("EXTRACT_MODEL"), make_llm("QUERY_MODEL")
+            MemoryStore(pool, Embedder()),
+            make_llm("EXTRACT_MODEL"),
+            make_llm("QUERY_MODEL"),
+            Rank.from_env(),
         )

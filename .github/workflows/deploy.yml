@@ -1,0 +1,72 @@
+# Build -> migrate -> deploy to Cloud Run (ADR 0009). Runs after `ci` passes on main.
+# It does nothing until the repository variable GCP_PROJECT_ID is set; see docs/deploy.md.
+name: deploy
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # lets the job ask Google for a short-lived credential (no JSON key in GitHub)
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/agentic-memory:${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  build:
+    if: vars.GCP_PROJECT_ID != '' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+      - run: docker build -t "$IMAGE" .
+      - run: docker push "$IMAGE"
+
+  migrate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      # A job, not app startup: a failed migration stops the deploy before any traffic moves.
+      - run: |
+          gcloud run jobs deploy agentic-memory-migrate --image "$IMAGE" --region "$REGION" \
+            --command python --args=-m,agentic_memory.migrate \
+            --set-secrets DATABASE_URL=database-url:latest --max-retries 0
+          gcloud run jobs execute agentic-memory-migrate --region "$REGION" --wait
+
+  deploy:
+    needs: migrate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          service: agentic-memory
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ env.IMAGE }}
+          flags: --memory=1Gi --cpu=1 --min-instances=0 --max-instances=2 --allow-unauthenticated
+          secrets: |
+            DATABASE_URL=database-url:latest
+            ANTHROPIC_API_KEY=anthropic-api-key:latest
+            API_KEY=api-key:latest
+          env_vars: |
+            EXTRACT_MODEL=${{ vars.EXTRACT_MODEL }}
+            QUERY_MODEL=${{ vars.QUERY_MODEL }}

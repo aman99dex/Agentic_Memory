@@ -10,7 +10,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from agentic_memory.store import Memory, MemoryStore, Turn
+from agentic_memory.rank import Rank
+from agentic_memory.store import Memory, MemoryStore, Retriever, Turn
+from agentic_memory.telemetry import tracer
 
 TOP_K = 10
 ReturnMode = Literal["facts", "turns", "both"]
@@ -90,17 +92,38 @@ async def recall(
     context: Sequence[str] = (),
     budget: int = 1500,
     mode: ReturnMode = "both",
+    retriever: Retriever = "hybrid",
+    rank: Rank | None = None,
+    rewrite: bool = True,
 ) -> Recall:
-    rewriter = query_llm.with_structured_output(Query)
-    q: Query = await rewriter.ainvoke(
-        REWRITE_PROMPT.format(
-            now=now.date().isoformat(), context="\n".join(context) or "(none)", query=query
-        )
-    )
-    if q.as_of and q.as_of.tzinfo is None:  # the LLM gives a bare date; the database wants a zone
-        q = q.model_copy(update={"as_of": q.as_of.replace(tzinfo=UTC)})
-    memories = await store.search(user_id, q.search_text, limit=TOP_K, as_of=q.as_of)
-    turn_ids = list(dict.fromkeys(i for m in memories for i in m.source_turn_ids))
-    turns = await store.get_turns(user_id, turn_ids) if mode != "facts" else []
-    shown_memories = memories if mode != "turns" else []
-    return Recall(pack(shown_memories, turns, budget), shown_memories, turns, q)
+    """`rewrite=False` skips the LLM call: the query is searched as typed, with no time filter."""
+    with tracer.start_as_current_span("recall"):
+        if rewrite:
+            with tracer.start_as_current_span("recall.rewrite"):
+                rewriter = query_llm.with_structured_output(Query)
+                q: Query = await rewriter.ainvoke(
+                    REWRITE_PROMPT.format(
+                        now=now.date().isoformat(),
+                        context="\n".join(context) or "(none)",
+                        query=query,
+                    )
+                )
+        else:
+            q = Query(search_text=query)
+        if q.as_of and q.as_of.tzinfo is None:  # the LLM gives a bare date; the DB wants a zone
+            q = q.model_copy(update={"as_of": q.as_of.replace(tzinfo=UTC)})
+        with tracer.start_as_current_span("recall.search"):
+            memories = await store.search(
+                user_id,
+                q.search_text,
+                limit=TOP_K,
+                as_of=q.as_of,
+                retriever=retriever,
+                rank=rank,
+                now=now,
+            )
+        with tracer.start_as_current_span("recall.expand_and_pack"):
+            turn_ids = list(dict.fromkeys(i for m in memories for i in m.source_turn_ids))
+            turns = await store.get_turns(user_id, turn_ids) if mode != "facts" else []
+            shown_memories = memories if mode != "turns" else []
+            return Recall(pack(shown_memories, turns, budget), shown_memories, turns, q)

@@ -86,10 +86,58 @@ otherwise the result is empty.
 
 ---
 
-## Not built yet (on purpose)
-- **Rerank** by importance and recency, and **forgetting by decay**: both need new columns
-  (`importance`, `last_accessed_at`). They are worth building once Phase 5's evaluation shows
-  whether plain RRF ranking is the bottleneck, rather than before.
+## 3.4 Rerank: what we remember should reflect what mattered (ADR 0016)
+
+**Picture it.** A bookshelf. Books you read all the time sit at eye level; books untouched for years
+migrate to the top shelf in the attic. Nobody threw them away.
+
+**Plainly.** Search gives a score to each candidate fact. We then nudge that score: facts that keep
+being useful get a boost ("importance"), and facts that haven't been touched for a long time get a
+small penalty ("recency decay"). The best fact after nudging goes first.
+
+**Show it.** Two identical facts, "The user plays chess": one last recalled yesterday, one never
+recalled and two years old. With a one-year half-life the old one's score is multiplied by
+0.5^(730/365) = 0.25, the fresh one by 1.0. The fresh one wins (`test_a_recent_fact_outranks_an_identical_old_one`).
+
+**The real version.** `score = fused_score × (1 + 0.5 × importance) × 0.5^(age / 365 days)`.
+Importance starts at 0, rises by 0.1 each time `recall` returns the fact (capped at 1.0), and decays
+by ×0.9 every night. A **half-life** is the time for a quantity to halve. RRF scores for ranks 1 and
+10 differ only by about 13% (1/61 vs 1/70), so a decay factor of 0.25 can easily overturn them: that is why the weights are
+config, and why Phase 5 includes a `--no-rerank` ablation to check it helps at all.
+
+**In our code.** `rank.py` (`Rank.factor`), `MemoryStore.search(rank=..., now=...)` and `_rerank`,
+`MemoryStore.touch`, `MemoryService.recall`. Importance is earned by use, not guessed by an LLM.
+
+**Interview line.** "Importance is earned by being recalled, so it costs no LLM call, and the weights
+are exposed and ablated rather than assumed."
+
+<details><summary>Check: why measure age against the `now` we pass in, not the clock?</summary>
+The evaluation replays conversations from 2023 as if asking on their dates; real-clock age would
+make every fact "years old" and the test meaningless.
+</details>
+
+---
+
+## 3.5 Forgetting that is not deleting (ADR 0016)
+
+**Picture it.** Moving old files to an archive box instead of the shredder.
+
+**Plainly.** A nightly job (`python -m agentic_memory.decay`) multiplies every importance by 0.9, then
+marks a current fact "archived" if it is both unimportant and hasn't been recalled for a year.
+Archived facts disappear from search but stay in the database and in a fact's history, and
+`unarchive` brings them back. Only `forget` (Phase 4) truly erases.
+
+**The real version.** Archiving is a `UPDATE ... SET archived_at` and search filters
+`archived_at IS NULL` in one shared constant (`VISIBLE`), so no query can forget to apply it. The
+risk is real: a true-but-rarely-asked fact ("allergic to peanuts") can go cold. That is why the
+threshold is a year, why it is reversible, and why it is documented as a trade-off.
+
+**Interview line.** "Forgetting archives, never deletes, so the only irreversible operation is the one the
+user explicitly asks for."
+
+<details><summary>Check: why does the decay job skip closed (superseded) facts?</summary>
+They are already invisible to search; archiving them would hide nothing and lose nothing.
+</details>
 
 ## Try it yourself
 1. `uv run --env-file .env python -m pytest tests/test_read_path.py -q`: expect `4 passed`.

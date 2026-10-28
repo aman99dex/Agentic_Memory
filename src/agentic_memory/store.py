@@ -5,7 +5,8 @@ import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
 import numpy as np
 from psycopg import AsyncConnection
@@ -13,11 +14,16 @@ from psycopg.rows import class_row
 from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.embedder import Embedder
-from agentic_memory.fusion import rrf
+from agentic_memory.fusion import rrf_scores
+from agentic_memory.rank import Rank
+
+Retriever = Literal["hybrid", "vector", "text"]
 
 # A fact is visible at time T if it had started and not yet ended. as_of = NULL means "now":
 # 'infinity' makes valid_to > T false for every closed fact, so only current ones remain.
+# Archived facts (ADR 0016) are hidden from search but still exist and still show in history.
 VISIBLE = """user_id = %(user_id)s
+    AND archived_at IS NULL
     AND valid_from <= coalesce(%(as_of)s::timestamptz, 'infinity')
     AND (valid_to IS NULL OR valid_to > coalesce(%(as_of)s::timestamptz, 'infinity'))"""
 
@@ -234,6 +240,14 @@ class MemoryStore:
             )
             return await cur.fetchall()
 
+    async def drop(self, user_id: str, memory_id: int) -> bool:
+        """Delete one fact row (no history, no turns). Only for the history-off ablation."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "DELETE FROM memories WHERE id = %s AND user_id = %s", (memory_id, user_id)
+            )
+            return cur.rowcount == 1
+
     async def forget(
         self, user_id: str, memory_ids: Sequence[int] | None = None
     ) -> tuple[int, int]:
@@ -280,6 +294,46 @@ class MemoryStore:
             )
         return mems, turns
 
+    async def _rerank(
+        self, ids: list[int], scores: dict[int, float], rank: Rank, now: datetime
+    ) -> list[int]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """SELECT id, importance, coalesce(last_accessed_at, valid_from)
+                   FROM memories WHERE id = ANY(%s)""",
+                (ids,),
+            )
+            rows = await cur.fetchall()
+        adjusted = {
+            i: scores[i] * rank.factor(float(imp), (now - touched).total_seconds() / 86400)
+            for i, imp, touched in rows
+        }
+        return sorted(ids, key=adjusted.__getitem__, reverse=True)
+
+    async def touch(
+        self, user_id: str, memory_ids: Sequence[int], at: datetime, rank: Rank
+    ) -> None:
+        """Record that these facts were just recalled: more important, and fresh again."""
+        if not memory_ids:
+            return
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """UPDATE memories
+                   SET importance = least(importance + %s, %s), last_accessed_at = %s
+                   WHERE user_id = %s AND id = ANY(%s)""",
+                (rank.access_boost, rank.importance_cap, at, user_id, list(memory_ids)),
+            )
+
+    async def unarchive(self, user_id: str, memory_ids: Sequence[int]) -> int:
+        """Bring archived facts back into search. Returns how many were restored."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                """UPDATE memories SET archived_at = NULL
+                   WHERE user_id = %s AND id = ANY(%s) AND archived_at IS NOT NULL""",
+                (user_id, list(memory_ids)),
+            )
+            return cur.rowcount
+
     async def search_vector(
         self, user_id: str, query: str, limit: int = 20, as_of: datetime | None = None
     ) -> list[int]:
@@ -314,14 +368,36 @@ class MemoryStore:
         return []
 
     async def search(
-        self, user_id: str, query: str, limit: int = 10, as_of: datetime | None = None
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 10,
+        as_of: datetime | None = None,
+        retriever: Retriever = "hybrid",
+        rank: Rank | None = None,
+        now: datetime | None = None,
     ) -> list[Memory]:
-        """Hybrid search: both retrievers at once, fused with RRF (ADR 0005)."""
-        by_meaning, by_words = await asyncio.gather(
-            self.search_vector(user_id, query, as_of=as_of),
-            self.search_text(user_id, query, as_of=as_of),
-        )
-        ids = rrf([by_meaning, by_words])[:limit]
+        """Hybrid search: both retrievers at once, fused with RRF (ADR 0005).
+
+        `retriever` exists so the evaluation can switch one half off (ablation, ADR 0015).
+        With `rank`, the fused candidates are reordered by importance and recency (ADR 0016);
+        `now` is the moment age is measured from (default: the real clock).
+        """
+        if retriever == "vector":
+            rankings = [await self.search_vector(user_id, query, as_of=as_of)]
+        elif retriever == "text":
+            rankings = [await self.search_text(user_id, query, as_of=as_of)]
+        else:
+            by_meaning, by_words = await asyncio.gather(
+                self.search_vector(user_id, query, as_of=as_of),
+                self.search_text(user_id, query, as_of=as_of),
+            )
+            rankings = [by_meaning, by_words]
+        scores = rrf_scores(rankings)
+        ids = sorted(scores, key=scores.__getitem__, reverse=True)
+        if rank is not None and ids:
+            ids = await self._rerank(ids, scores, rank, now or datetime.now(UTC))
+        ids = ids[:limit]
         async with self._pool.connection() as conn:
             cur = conn.cursor(row_factory=class_row(Memory))
             await cur.execute(

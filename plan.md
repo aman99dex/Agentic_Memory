@@ -144,12 +144,13 @@ weekends.
 
 ### Phase 3: The read path and context packing (week 3)
 - [x] Query rewrite for questions that refer back ("what did she say about it?").
-- [ ] Rerank: `score = rrf * (1 + importance) * recency_decay(last_accessed_at)`.
-      Expose the weights in config.
+- [x] Rerank: `score = rrf * (1 + importance) * recency_decay(last_accessed_at)`.
+      Expose the weights in config. (ADR 0016; `RANK_*` env vars. Whether it helps is Phase 5's
+      `--no-rerank` ablation, not yet run.)
 - [x] A **token-budget packer**: greedily fill N tokens, deduplicate, keep current
       facts over superseded ones. (Done: facts first, then source turns, deduped by id.)
-- [ ] Forgetting: a nightly job decays importance and archives memories that are cold
-      and low-importance. Archived memories are not deleted.
+- [x] Forgetting: a nightly job decays importance and archives memories that are cold
+      and low-importance. Archived memories are not deleted. (`python -m agentic_memory.decay`)
 - **Learn:** the "lost in the middle" problem and why the order of packed context
       matters.
 
@@ -158,13 +159,14 @@ weekends.
       `GET /memories/{id}/history`. Multi-tenant through `user_id` and `namespace`.
 - [x] **MCP server** exposing three tools: `remember`, `recall` and `forget`.
 - [ ] Demo: add it to Claude Code (`claude mcp add`) and record a 60-second GIF of it
-      remembering across sessions.
-- [ ] A small Python SDK: `Memory(user_id).add(...)` and `.search(...)`.
+      remembering across sessions. (Needs a human screen recording; not done.)
+- [x] A small Python SDK: `Memory(user_id).add(...)` and `.search(...)`. (`client.py`)
 - [x] API-key auth on the REST API. Validate input at the boundary.
 
 ### Phase 5: Evaluation, the part that sells it (weeks 5–6)
-- [ ] An `eval/` harness for **LongMemEval** (the 500-question `_s` split) and
-      **LoCoMo**.
+- [x] An `eval/` harness for **LongMemEval** (the 500-question `_s` split) and
+      **LoCoMo**. (Built and tested; LongMemEval has run on 1 question, LoCoMo converts
+      offline but has not been run through the LLMs yet.)
 - [ ] Three systems compared on the same answering model:
   1. **Full context**: the whole history stuffed into the prompt (upper bound on cost)
   2. **Naive RAG**: chunk the history, vector top-k
@@ -178,14 +180,17 @@ weekends.
       update, temporal reasoning, abstention.
 - [ ] An ablation table: switch off hybrid search, reranking, and history-keeping one at
       a time. Show what each piece is worth.
-- [ ] Save the results as JSON in `eval/results/`, and generate the README table from
+- [x] Save the results as JSON in `eval/results/`, and generate the README table from
       them. **Never hand-type a number.**
 - **Learn:** LLM-as-judge pitfalls; why ablations matter more than one headline number.
 
 ### Phase 6: Production polish (week 7)
-- [ ] OpenTelemetry spans for each graph node, plus token and cost counters.
-- [ ] Load test with `locust`; record p95 at 50 concurrent users.
-- [ ] Docker image, `docker compose up` brings up everything, `.env.example`.
+- [x] OpenTelemetry spans for each graph node, plus token and cost counters. (Verified with
+      a real LLM call and in-memory exporters; ADR 0018.)
+- [ ] Load test with `locust`; record p95 at 50 concurrent users. (Script built and imports;
+      not run: it spends LLM money and needs an idle machine.)
+- [x] Docker image, `docker compose up` brings up everything, `.env.example`. (Built; migrate
+      job + API verified live; CD workflow written but unrun, see docs/deploy.md.)
 - [ ] README: a 30-second pitch, the architecture diagram, the results table, a quick
       start, and design decisions with their trade-offs.
 - [ ] Tag `v0.1.0`.

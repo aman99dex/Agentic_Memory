@@ -3,25 +3,35 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phases 0-2 on `main`. Phases 3 (core) and 4 are built, tested and uncommitted.**
-  The system now works end to end: ingest a turn, it becomes versioned facts, recall returns
-  current facts + their source turns under a token budget, over REST and MCP, with hard
-  delete. Verified live: `curl` against the running server, and an MCP client over stdio.
-  Tests: real Postgres + real Haiku 5.5; ruff/mypy clean.
+- **Phases 0-2 on `main`. Everything after is built, tested and UNCOMMITTED** (Phases 3-4, the
+  Phase 5 harness, rerank/decay, SDK, telemetry, load test, Docker, deploy workflow, docs).
+  The system works end to end: ingest a turn, it becomes versioned facts, recall returns
+  current facts + their source turns under a token budget, over REST, MCP and a Python SDK,
+  with hard delete, rerank by importance/recency and nightly archiving. Verified: 59 tests
+  (real Postgres + real Haiku 5.5), ruff/mypy clean, the Docker image builds and the compose
+  `migrate` + `api` services ran live (curl: auth, ingest, both search modes, importance rose).
+- **What has NOT been run:** the real evaluation (only a 1-question smoke test exists), the
+  ablations, LoCoMo through the LLMs, the locust load test, the CD workflow, the 50 hand labels
+  for the judge. So the README Results block still says "No evaluation run yet", and no number
+  in the plan's "Measured" column is filled in.
 - **Workflow (Aman, 2026-10-26): build everything end to end first, teach last.** No lessons
   or check questions while building; concepts go into `docs/learn/phase-N.md`
-  (phase-2, 3 and 4 are written and waiting to be taught).
-- Not built on purpose: Phase 3 rerank (importance/recency) and decay-forgetting (need new
-  columns; do after Phase 5 shows whether ranking is the bottleneck), the Python SDK, and the
-  demo GIF.
+  (phase-2 to 6 are written and waiting to be taught).
+- Not built: the demo GIF (needs a human recording). Rerank and decay-forgetting were built
+  after the harness (ADR 0016); the Phase 5 ablation decides whether rerank stays on.
 
 ## Next session: start here
-1. Ask whether to commit + push the Phase 3/4 work (Aman's pattern: push to `main` directly).
-2. Phase 5: evaluation (LongMemEval/LoCoMo harness, paired comparisons per ADR 0008, results as
-   JSON in `eval/results/`, never hand-typed numbers). Read plan.md Phase 5 and ADRs 0007/0008.
-   The judge is pinned (ADR 0007).
-3. Phase 6: deploy (ADR 0009: Cloud Run + Neon), CI/CD.
-4. Teaching pass over `docs/learn/phase-2..4.md` once Aman says the system is good enough.
+1. Ask whether to commit + push (Aman's pattern: push to `main` directly), then tag `v0.1.0`
+   only once real results are in the README.
+2. **Run the evaluation, on an idle machine** (the first attempt made Aman's machine lag):
+   `uv run --env-file .env python -m eval.lme --n 12 --name pilot-12 --concurrency 2`, then the
+   ablations (`--retriever vector|text`, `--no-history`, `--no-rerank`, `--systems ours`), then
+   `--dataset locomo`. Render with `python -m eval.report <names> --readme`. If `--no-rerank`
+   does as well as the default, switch rerank off (ADR 0016 says the default must earn its place).
+3. Hand-label 50 answers (`python -m eval.agreement sample <run>`, then `score`).
+4. Load test (`docs/learn/phase-6.md` 6.2), then fill the plan's "Measured" table from JSON.
+5. Cloud setup for `docs/deploy.md` (only Aman can do this); the demo GIF (needs a recording).
+6. Teaching pass over `docs/learn/phase-2..6.md` once Aman says the system is good enough.
 5. Known gaps: turns must be ingested in time order; two simultaneous turns of one user could
    both ADD near-identical facts; one shared API key (no per-tenant keys yet); `recall` does one
    LLM call per query for rewrite (skip it when `context` is empty and no time words if cost
@@ -30,6 +40,61 @@ Newest entry first. Every session ends by adding one entry here.
 ## Open questions
 - None. LLM: Aman's personal Anthropic key is in `.env` (gitignored, verified working with a
   1-token call), Haiku 5.5 for every role (ADR 0012). Judge for Phase 5 still pinned (ADR 0007).
+
+---
+
+## 2026-10-29: everything left in the plan is built; evaluation not yet run
+**Done** (build first, then tested at the end, as Aman asked)
+- Phase 3: `rank.py` + `MemoryStore.search(rank=, now=)` rerank, `touch` on recall, migration
+  0004 (`importance`, `last_accessed_at`, `archived_at`), `decay.py` nightly job, `unarchive`.
+  ADR 0016. `rewrite=False` option on recall/API/SDK (skips the LLM rewrite).
+- Phase 4: `client.py` Python SDK (`Memory(user_id).add/search/history/forget`).
+- Phase 5: LoCoMo converter (`eval/locomo.py`, ADR 0017), per-history ingest lock and RAG index
+  cache, `--dataset`, `--no-rerank`, `eval/agreement.py` + `stats.kappa`, `eval/report.py`
+  rewritten (merges ablation runs, plan-targets table, load table, judge agreement).
+- Phase 6: `telemetry.py` (spans per node/step, token + cost counters, no content), locust load
+  test, `Dockerfile`, compose `migrate` + `api`, `deploy.yml` (OIDC, migrate as a job), CI builds
+  the image, `docs/deploy.md`, README rewritten. ADR 0018.
+- `docs/learn/phase-5.md`, `phase-6.md`; 3.4/3.5 added to phase-3, 4.5 to phase-4.
+- Tests: 36 -> 59 passing (rank, decay, SDK, LoCoMo converter, report, API rewrite=false).
+
+**Learned / surprising**
+- Text sent through a shell heredoc loses its backslashes (`
+` became a real newline and
+  broke `judge.py`); use the Edit tool for anything with backslashes. `ast.parse` over every
+  edited file caught it.
+- LangGraph's `add_node` type wants the node's parameter *named* `state`; a plain `Callable`
+  loses names, so `telemetry.traced` uses a `ParamSpec`.
+- `uv run mypy` / `uv run ruff` hit the uv-trampoline bug; `uv run --env-file .env python -m ...`
+  works for all of them. `docker compose up -d --build api` applied migration 0004 to the
+  existing dev DB without touching 0001-0003's checksums.
+- Real telemetry check: one Haiku structured-output call = 525 input / 43 output tokens, and
+  `llm.cost` came out as the hand calculation.
+- LoCoMo: 1986 questions, 446 adversarial (no gold answer) dropped -> 1540 in 10 conversations;
+  4 questions have no evidence sessions (their recall is recorded as null).
+
+**Not done, and why**
+- The demo GIF (needs a human recording), cloud deployment (needs Aman's GCP/Neon accounts),
+  the real evaluation and load test (cost money; the machine lagged on the first try).
+
+---
+
+## 2026-10-27/28: Phase 5 harness built (uncommitted), smoke-tested on 1 question
+**Done**
+- `eval/` LongMemEval_s harness: `lme.py` (3 systems: full / rag / ours; seeded stratified
+  sampling; parallel extraction then real `ingest_turn` replay), `judge.py` (official prompts),
+  `llm_cache.py` (SQLite cache by model+schema+prompt), `stats.py` (paired bootstrap, McNemar,
+  Holm; `tests/test_stats.py`), `report.py` (README table from JSON). ADR 0015.
+- Ablation switches: `search(retriever=hybrid|vector|text)`, `build_graph(keep_history=False)`
+  (+ `store.drop`), `--no-history`. Fix: two facts in one turn replacing the same old fact no
+  longer crash apply (test added).
+- `eval/results/smoke-1.json`: 1 knowledge-update question, all three correct. Context tokens:
+  full 117,658 vs ours 1,922 vs rag 1,651.
+
+**Learned / surprising**
+- The smoke run showed rag retrieval_seconds = 44 s, but the query embed measures 4-95 ms in
+  isolation, so it was a one-off stall; judge latency from p50/p95 over many questions only.
+- `uv run mypy` hits the uv-trampoline bug too; use `uv run --env-file .env python -m mypy`.
 
 ---
 

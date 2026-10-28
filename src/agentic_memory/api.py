@@ -38,6 +38,7 @@ class SearchIn(BaseModel):
     context: list[Annotated[str, Field(max_length=2_000)]] = Field(default=[], max_length=20)
     budget: int = Field(default=1500, ge=50, le=20_000)
     mode: ReturnMode = "both"
+    rewrite: bool = True  # false skips the LLM query rewrite: faster and free, no time filter
 
 
 def create_app(service: MemoryService | None = None, api_key: str | None = None) -> FastAPI:
@@ -75,7 +76,12 @@ def create_app(service: MemoryService | None = None, api_key: str | None = None)
     @app.post("/memories:search")
     async def search(body: SearchIn, s: Svc) -> dict[str, object]:
         r = await s.recall(
-            body.user_id, body.query, context=body.context, budget=body.budget, mode=body.mode
+            body.user_id,
+            body.query,
+            context=body.context,
+            budget=body.budget,
+            mode=body.mode,
+            rewrite=body.rewrite,
         )
         return {
             "text": r.text,

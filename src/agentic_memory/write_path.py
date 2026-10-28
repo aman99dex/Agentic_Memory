@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from agentic_memory.store import Memory, MemoryStore
+from agentic_memory.telemetry import UsageCallback, traced, tracer
 
 CANDIDATES = 5  # how many similar stored facts the reconcile step gets to see
 
@@ -78,7 +79,15 @@ class State(TypedDict):
 
 def make_llm(role: str = "EXTRACT_MODEL") -> Any:
     """The model for a role is an env var (ADR 0007), e.g. anthropic:claude-haiku-5-5."""
-    return init_chat_model(os.environ[role])  # no temperature: Haiku 5.5 rejects the parameter
+    name = os.environ[role]
+    # no temperature: Haiku 5.5 rejects the parameter
+    return init_chat_model(name, callbacks=[UsageCallback(role, name)])
+
+
+def extract_prompt(occurred_at: datetime, user_text: str, assistant_text: str) -> str:
+    return EXTRACT_PROMPT.format(
+        when=occurred_at.date().isoformat(), user_text=user_text, assistant_text=assistant_text
+    )
 
 
 def _show(memories: list[Memory]) -> str:
@@ -94,17 +103,17 @@ def _check(decision: Decision, shown: set[int]) -> tuple[Action, int | None]:
     return action, (target if action in ("UPDATE", "INVALIDATE") else None)
 
 
-def build_graph(store: MemoryStore, extract_llm: Any, reconcile_llm: Any) -> Any:
+def build_graph(
+    store: MemoryStore, extract_llm: Any, reconcile_llm: Any, keep_history: bool = True
+) -> Any:
+    """`keep_history=False` deletes a replaced fact instead of closing it: the ablation that
+    measures what bi-temporal history is worth (ADR 0015). Production always keeps it."""
     extractor = extract_llm.with_structured_output(Facts)
     judge = reconcile_llm.with_structured_output(Decision)
 
     async def extract(state: State) -> dict[str, Any]:
         out: Facts = await extractor.ainvoke(
-            EXTRACT_PROMPT.format(
-                when=state["occurred_at"].date().isoformat(),
-                user_text=state["user_text"],
-                assistant_text=state["assistant_text"],
-            )
+            extract_prompt(state["occurred_at"], state["user_text"], state["assistant_text"])
         )
         return {"facts": [f.strip() for f in out.facts if f.strip()]}
 
@@ -128,10 +137,22 @@ def build_graph(store: MemoryStore, extract_llm: Any, reconcile_llm: Any) -> Any
                 await store.add(uid, s["fact"], src, at)
             elif s["action"] == "UPDATE":
                 assert s["memory_id"] is not None
-                await store.supersede(uid, s["memory_id"], s["fact"], src, at)
+                try:
+                    if keep_history:
+                        await store.supersede(uid, s["memory_id"], s["fact"], src, at)
+                    else:
+                        await store.drop(uid, s["memory_id"])
+                        await store.add(uid, s["fact"], src, at)
+                except LookupError:
+                    # Another fact in this same turn already replaced the target. The fact is
+                    # still new information, so keep it (same rule as an unknown id in _check).
+                    await store.add(uid, s["fact"], src, at)
             elif s["action"] == "INVALIDATE":
                 assert s["memory_id"] is not None
-                await store.invalidate(uid, s["memory_id"], at)
+                if keep_history:
+                    await store.invalidate(uid, s["memory_id"], at)
+                else:
+                    await store.drop(uid, s["memory_id"])
         return {}
 
     def has_actions(state: State) -> str:
@@ -141,9 +162,9 @@ def build_graph(store: MemoryStore, extract_llm: Any, reconcile_llm: Any) -> Any
         return "reconcile" if state["facts"] else END
 
     g = StateGraph(State)
-    g.add_node("extract", extract)
-    g.add_node("reconcile", reconcile)
-    g.add_node("apply", apply)
+    g.add_node("extract", traced("extract", extract))
+    g.add_node("reconcile", traced("reconcile", reconcile))
+    g.add_node("apply", traced("apply", apply))
     g.add_edge(START, "extract")
     g.add_conditional_edges("extract", has_facts, ["reconcile", END])
     g.add_conditional_edges("reconcile", has_actions, ["apply", END])
@@ -161,23 +182,26 @@ async def ingest_turn(
     occurred_at: datetime,
 ) -> list[Step]:
     """Store the turn, then turn it into facts. Safe to call twice with the same round."""
-    turn_id, is_new = await store.add_turn(
-        user_id, session_id, user_text, assistant_text, occurred_at
-    )
-    if not is_new and await store.turn_has_memories(user_id, turn_id):
-        return []  # already processed
-    # A repeat with no facts yet is retried: an earlier crash must not lose the turn for good.
-    # Retrying is safe because reconcile answers NOOP for facts that are already stored.
-    final = await graph.ainvoke(
-        {
-            "user_id": user_id,
-            "turn_id": turn_id,
-            "user_text": user_text,
-            "assistant_text": assistant_text,
-            "occurred_at": occurred_at,
-            "facts": [],
-            "steps": [],
-        }
-    )
-    steps: list[Step] = final["steps"]
-    return steps
+    with tracer.start_as_current_span("ingest") as span:
+        turn_id, is_new = await store.add_turn(
+            user_id, session_id, user_text, assistant_text, occurred_at
+        )
+        span.set_attribute("turn.is_new", is_new)
+        if not is_new and await store.turn_has_memories(user_id, turn_id):
+            return []  # already processed
+        # A repeat with no facts yet is retried: an earlier crash must not lose the turn for good.
+        # Retrying is safe because reconcile answers NOOP for facts that are already stored.
+        final = await graph.ainvoke(
+            {
+                "user_id": user_id,
+                "turn_id": turn_id,
+                "user_text": user_text,
+                "assistant_text": assistant_text,
+                "occurred_at": occurred_at,
+                "facts": [],
+                "steps": [],
+            }
+        )
+        steps: list[Step] = final["steps"]
+        span.set_attribute("facts.found", len(steps))
+        return steps

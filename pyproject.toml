@@ -15,6 +15,9 @@ dependencies = [
     "uvicorn>=0.54.0",
     "mcp>=2.3.0",
     "httpx>=0.28.1",
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
 ]
 
 [dependency-groups]
@@ -25,6 +28,7 @@ dev = [
     "mypy>=2.4",
     "pytest-asyncio>=1.4.0",
 ]
+load = ["locust>=2.47.0"]  # `uv sync --group load`; only for loadtest/
 
 [build-system]
 requires = ["hatchling"]
@@ -37,6 +41,10 @@ extend-exclude = ["archive"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
 ignore = ["S101"]  # assert is how pytest works
+
+[tool.ruff.lint.per-file-ignores]
+"eval/*" = ["E501"]  # prompts and report tables are long lines of text
+"loadtest/*" = ["E501"]
 
 [tool.mypy]
 strict = true

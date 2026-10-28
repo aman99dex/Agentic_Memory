@@ -103,6 +103,34 @@ configuration removes that attack.
 
 ---
 
+## 4.5 A Python SDK is a thin wrapper, on purpose
+
+**Picture it.** A TV remote: it sends signals to the TV, and holds none of the TV's logic.
+
+**Plainly.** Instead of writing HTTP requests by hand, a Python program can do:
+
+```python
+from agentic_memory.client import Memory
+
+mem = Memory("aman", base_url="http://127.0.0.1:8000", api_key="...")
+mem.add("I moved to Pune.")
+print(mem.search("Where do I live?").text)
+```
+
+**The real version.** `client.py` only builds requests and parses replies with `httpx`; all
+behavior stays in the service (so there is no second place to keep correct). `add` defaults
+`occurred_at` to "now", which is part of the idempotency key (ADR 0013): to retry a failed call
+safely you pass the same `occurred_at` again. The test uses `httpx.MockTransport`, a fake network,
+so it needs no server, database or LLM.
+
+**Interview line.** "The SDK holds no logic: one service, three clients (REST, MCP, Python)."
+
+<details><summary>Check: why does a retried `add` need the same `occurred_at`?</summary>
+The turn's fingerprint includes it; a new timestamp looks like a brand-new message and would be stored twice.
+</details>
+
+---
+
 ## Try it yourself
 1. `docker compose up -d db`, then migrate and serve (see the README). Open
    `http://127.0.0.1:8000/docs` and call `/memories:ingest` with the key from `.env`.
