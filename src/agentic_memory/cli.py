@@ -306,15 +306,26 @@ def _serve() -> None:
     run(server.serve())
 
 
-def _log_to(path: Path) -> None:
-    """Our own logger to a file: stdout belongs to hooks and the MCP protocol."""
+def _setup_logging() -> None:
+    """Our own logger, to a file in the home folder: stdout belongs to hooks and the MCP
+    protocol. Where no home folder can be made (a container user without one), to stderr,
+    which is where a container's logs belong anyway."""
     logger = logging.getLogger("agentic_memory")
     logger.setLevel(logging.INFO)
-    target = str(path.resolve())
-    if not any(getattr(h, "baseFilename", None) == target for h in logger.handlers):
+    handler: logging.Handler
+    try:
+        config.home().mkdir(parents=True, exist_ok=True)
+        path = config.home() / "agentic-memory.log"
+        target = str(path.resolve())
+        if any(getattr(h, "baseFilename", None) == target for h in logger.handlers):
+            return
         handler = logging.FileHandler(path, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
+    except OSError:
+        if any(type(h) is logging.StreamHandler for h in logger.handlers):
+            return
+        handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -346,8 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config.load()
-    config.home().mkdir(parents=True, exist_ok=True)
-    _log_to(config.home() / "agentic-memory.log")
+    _setup_logging()
     match args.command:
         case "hook":
             return hook(args.event)

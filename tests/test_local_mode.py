@@ -65,6 +65,16 @@ def test_session_start_tells_what_is_known_without_any_llm(home, repo, monkeypat
     assert "type hints" in elsewhere and "Cloud Run" not in elsewhere
 
 
+def test_commands_run_where_no_home_folder_can_be_made(tmp_path, monkeypatch, capsys):
+    # The Docker image runs as a user with no home directory; the API crashed on start once.
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a folder")
+    monkeypatch.setenv("AGENTIC_MEMORY_HOME", str(blocker / "home"))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'm.db').as_posix()}")
+    assert cli.main(["status"]) == 0
+    assert "queued:" in capsys.readouterr().out
+
+
 def test_hooks_swallow_bad_input_and_a_stop_without_a_prompt(home, monkeypatch, capsysbinary):
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{not json"), encoding="utf-8"))
     assert cli.main(["hook", "session-start"]) == 0
