@@ -8,12 +8,16 @@ resolution-markers = [
 
 [[package]]
 name = "agentic-memory"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+server = [
     { name = "fastapi" },
     { name = "fastembed" },
-    { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-anthropic" },
     { name = "langgraph" },
@@ -28,6 +32,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "agentic-memory", extra = ["server"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -40,23 +45,25 @@ load = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.162.0" },
-    { name = "fastembed", specifier = ">=0.9.0" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.162.0" },
+    { name = "fastembed", marker = "extra == 'server'", specifier = ">=0.9.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "langchain", specifier = ">=1.4.7" },
-    { name = "langchain-anthropic", specifier = ">=1.7.6" },
-    { name = "langgraph", specifier = ">=1.2.17" },
-    { name = "mcp", specifier = ">=2.3.0" },
-    { name = "opentelemetry-api", specifier = ">=1.45.1" },
-    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.45.1" },
-    { name = "opentelemetry-sdk", specifier = ">=1.45.1" },
-    { name = "pgvector", specifier = ">=0.5" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
+    { name = "langchain", marker = "extra == 'server'", specifier = ">=1.4.7" },
+    { name = "langchain-anthropic", marker = "extra == 'server'", specifier = ">=1.7.6" },
+    { name = "langgraph", marker = "extra == 'server'", specifier = ">=1.2.17" },
+    { name = "mcp", marker = "extra == 'server'", specifier = ">=2.3.0" },
+    { name = "opentelemetry-api", marker = "extra == 'server'", specifier = ">=1.45.1" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'server'", specifier = ">=1.45.1" },
+    { name = "opentelemetry-sdk", marker = "extra == 'server'", specifier = ">=1.45.1" },
+    { name = "pgvector", marker = "extra == 'server'", specifier = ">=0.5" },
+    { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'server'", specifier = ">=3.3" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.54.0" },
 ]
+provides-extras = ["server"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "agentic-memory", extras = ["server"] },
     { name = "mypy", specifier = ">=2.4" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },

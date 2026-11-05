@@ -195,6 +195,26 @@ weekends.
       start, and design decisions with their trade-offs.
 - [ ] Tag `v0.1.0`.
 
+### Phase 7: Usable by real people (added 2026-11-04, before the evaluation)
+Why: see `docs/intent/usable-product.md`. Each item has an ADR (0019-0023).
+- [x] **Local mode on SQLite** (ADR 0019): the default when no `DATABASE_URL` is set. FTS5 BM25
+      for words, exact vector search in numpy. Postgres stays for servers. Migrations ship
+      inside the package so an installed copy can create its own database.
+- [x] **Background saving** (ADR 0020): a save stores the turn and returns; a worker turns it into
+      facts. A per-user lease means one worker per user at a time (fixes the duplicate-ADD race)
+      and turns are processed in time order. Failed turns retry, then stop after 5 tries.
+- [x] **Scopes, episodes and a profile** (ADR 0021): facts are user-wide or belong to one
+      namespace (a project); each session gets a rolling summary (episodic memory); a
+      reflector keeps a short user profile and a per-project summary. `context` returns them
+      without any LLM call.
+- [x] **Claude Code plugin** (ADR 0022): SessionStart injects the context, UserPromptSubmit +
+      Stop capture each turn in the background, the MCP server stays for explicit recall.
+      `agentic-memory setup claude-code` installs it.
+- [x] **Product side** (ADR 0023): per-tenant API keys, `pip install agentic-memory` is the
+      client only (`[server]` for the rest), bulk import endpoint and CLI.
+- [x] End-to-end check: fresh `uv tool install`, a real `claude -p` session in a scratch repo
+      remembers across two sessions without being told.
+
 ## Definition of done (what makes it "production level")
 - One command brings up the whole stack, and CI is green: lint, type-check, unit tests
   and integration tests.

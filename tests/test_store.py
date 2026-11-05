@@ -1,27 +1,17 @@
-"""MemoryStore against a real Postgres and the real embedding model."""
+"""Both stores (real Postgres, real SQLite) with the real embedding model. Every test runs
+once per database: the two must behave the same (ADR 0019)."""
 
 import uuid
 from datetime import UTC, datetime
 
 import pytest
-from pgvector.psycopg import register_vector_async
-from psycopg_pool import AsyncConnectionPool
-
-from agentic_memory.embedder import Embedder
-from agentic_memory.store import MemoryStore
 
 JAN, MAR, OCT = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 3, 10))
 
 
-@pytest.fixture(scope="session")
-def embedder():
-    return Embedder()
-
-
 @pytest.fixture
-async def store(db_url, embedder):
-    async with AsyncConnectionPool(db_url, configure=register_vector_async, open=False) as pool:
-        yield MemoryStore(pool, embedder)
+def store(any_store):
+    return any_store
 
 
 @pytest.fixture

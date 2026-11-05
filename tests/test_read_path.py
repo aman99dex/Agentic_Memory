@@ -9,8 +9,9 @@ from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.embedder import Embedder
+from agentic_memory.postgres_store import MemoryStore
 from agentic_memory.read_path import pack, recall
-from agentic_memory.store import Memory, MemoryStore, Turn
+from agentic_memory.store import Memory, Turn
 from agentic_memory.write_path import build_graph, ingest_turn, make_llm
 
 JAN, MAR, OCT = (datetime(2026, m, 1, tzinfo=UTC) for m in (1, 3, 10))
@@ -31,6 +32,17 @@ def test_pack_puts_facts_first_and_skips_what_does_not_fit():
     assert out.startswith("Known facts:") and "Pune" in out
     assert "x" * 100 not in out  # the huge fact didn't fit
     assert "Source conversations:" in out  # the leftover budget still goes to the turns
+
+
+def test_pack_keeps_summaries_apart_and_first_only_for_past_work():
+    episode = Memory(
+        9, "u", "Fixed the failing import.", [1], JAN, None, None, JAN, None, "episode"
+    )
+    facts_first = pack([mem(1, "The user lives in Pune."), episode], [], budget=500)
+    assert facts_first.index("Known facts:") < facts_first.index("Past sessions:")
+    assert "session on 2026-01-01: Fixed the failing import." in facts_first
+    sessions_first = pack([mem(1, "The user lives in Pune."), episode], [], 500, True)
+    assert sessions_first.index("Past sessions:") < sessions_first.index("Known facts:")
 
 
 def test_pack_with_room_includes_the_source_turn():

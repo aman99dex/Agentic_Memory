@@ -10,7 +10,8 @@ from pathlib import Path
 
 import psycopg
 
-MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
+# Inside the package, so an installed copy (uv tool install, the Docker image) carries them.
+MIGRATIONS = Path(__file__).resolve().parent / "migrations" / "postgres"
 
 
 def migrate(conn: psycopg.Connection, directory: Path = MIGRATIONS) -> list[str]:

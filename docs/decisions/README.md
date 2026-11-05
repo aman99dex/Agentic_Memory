@@ -28,3 +28,8 @@ it this way?"
 | [0016](0016-use-based-importance-and-archiving.md) | Importance comes from use; rerank by importance and recency; forgetting archives, never deletes | Accepted |
 | [0017](0017-locomo-as-a-second-benchmark.md) | LoCoMo as a second benchmark, converted into the LongMemEval shape | Accepted |
 | [0018](0018-telemetry-load-test-and-retrieval-only-search.md) | OpenTelemetry without content; load test separates the LLM from retrieval | Accepted |
+| [0019](0019-sqlite-local-mode.md) | SQLite is the local default (FTS5 BM25, exact numpy vectors); Postgres stays for servers | Accepted |
+| [0020](0020-background-saving-and-leases.md) | Saving returns at once; a worker processes turns under a per-user lease | Accepted |
+| [0021](0021-scopes-episodes-profiles.md) | Facts have a scope; sessions get summaries; scopes get profiles | Accepted |
+| [0022](0022-claude-code-plugin.md) | Claude Code: a plugin with three hooks and a detached worker, plus the MCP server | Accepted |
+| [0023](0023-product-side.md) | Products: tenant keys, a client-only install, bulk import | Accepted |

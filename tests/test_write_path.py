@@ -12,8 +12,8 @@ from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.embedder import Embedder
-from agentic_memory.store import MemoryStore
-from agentic_memory.write_path import Decision, Facts, build_graph, ingest_turn, make_llm
+from agentic_memory.postgres_store import MemoryStore
+from agentic_memory.write_path import Decision, Fact, Facts, build_graph, ingest_turn, make_llm
 
 pytestmark = pytest.mark.skipif(
     "ANTHROPIC_API_KEY" not in os.environ, reason="needs a real LLM key (run with --env-file .env)"
@@ -94,7 +94,12 @@ class Stub:
 
 async def test_two_facts_replacing_the_same_old_fact_keep_both(store, user):
     old = await store.add(user, "The user is considering a Sony camera.", [1], JAN)
-    facts = Facts(facts=["The user bought a Sony camera.", "The user shoots landscapes."])
+    facts = Facts(
+        facts=[
+            Fact(text="The user bought a Sony camera."),
+            Fact(text="The user shoots landscapes."),
+        ]
+    )
     graph = build_graph(store, Stub(facts), Stub(Decision(action="UPDATE", memory_id=old)))
 
     steps = await ingest_turn(

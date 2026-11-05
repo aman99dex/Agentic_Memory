@@ -10,8 +10,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agentic_memory.context import tokens as _tokens
 from agentic_memory.rank import Rank
-from agentic_memory.store import Memory, MemoryStore, Retriever, Turn
+from agentic_memory.store import Kind, Memory, Retriever, Store, Turn
 from agentic_memory.telemetry import tracer
 
 TOP_K = 10
@@ -24,6 +25,9 @@ about a past moment. The current date is {now}.
   Keep every concrete word. If the question is already clear, return it unchanged.
 - as_of: only when the question asks what was true at a specific past time ("where did I live in
   March?"), that moment as an ISO 8601 date. Otherwise null. "Now" and "currently" are null.
+- past_sessions: true only when the question asks what happened, was done or was discussed in
+  earlier sessions ("what did we do yesterday?", "where did we leave the migration?"). False
+  for questions about facts, preferences or the current state ("where do I live?").
 
 Recent conversation (may be empty):
 {context}
@@ -34,6 +38,9 @@ Question: {query}"""
 class Query(BaseModel):
     search_text: str = Field(description="Self-contained search text")
     as_of: datetime | None = Field(default=None, description="Past moment asked about, or null")
+    past_sessions: bool = Field(
+        default=False, description="Asks what happened or was done in earlier sessions"
+    )
 
 
 @dataclass(frozen=True)
@@ -44,13 +51,9 @@ class Recall:
     query: Query
 
 
-def _tokens(text: str) -> int:
-    # ponytail: 4 characters ~ 1 token. Close enough for English; swap in a real tokenizer if
-    # budgets must be exact.
-    return len(text) // 4 + 1
-
-
 def _fact_line(m: Memory) -> str:
+    if m.kind == "episode":  # a summary of what happened in one session (ADR 0021)
+        return f"- [{m.id}] session on {m.valid_from.date()}: {m.content}"
     return f"- [{m.id}] {m.content} (since {m.valid_from.date()})"
 
 
@@ -58,16 +61,22 @@ def _turn_block(t: Turn) -> str:
     return f"[{t.occurred_at.date()}] user: {t.user_text}\nassistant: {t.assistant_text}"
 
 
-def pack(memories: Sequence[Memory], turns: Sequence[Turn], budget: int) -> str:
-    """Greedy: facts (compact) first, then source turns, each in rank order, until the budget.
+def pack(
+    memories: Sequence[Memory], turns: Sequence[Turn], budget: int, sessions_first: bool = False
+) -> str:
+    """Greedy: facts (compact) first, then session summaries, then source turns, each in rank
+    order, until the budget. For a question about past work, the summaries go first.
 
     Within each list it stops at the first item that doesn't fit, so a lower-ranked item never
     jumps ahead of a higher one. Whatever budget is left still goes to the next list.
+    Summaries get their own heading: they are history, never current truth (ADR 0021).
     """
+    facts = ("Known facts:", [_fact_line(m) for m in memories if m.kind != "episode"])
+    sessions = ("Past sessions:", [_fact_line(m) for m in memories if m.kind == "episode"])
     parts: list[str] = []
     used = 0
     for header, items in (
-        ("Known facts:", [_fact_line(m) for m in memories]),
+        *((sessions, facts) if sessions_first else (facts, sessions)),
         ("Source conversations:", [_turn_block(t) for t in turns]),
     ):
         lines: list[str] = []
@@ -83,7 +92,7 @@ def pack(memories: Sequence[Memory], turns: Sequence[Turn], budget: int) -> str:
 
 
 async def recall(
-    store: MemoryStore,
+    store: Store,
     query_llm: Any,
     user_id: str,
     query: str,
@@ -95,8 +104,10 @@ async def recall(
     retriever: Retriever = "hybrid",
     rank: Rank | None = None,
     rewrite: bool = True,
+    namespace: str | None = None,
 ) -> Recall:
-    """`rewrite=False` skips the LLM call: the query is searched as typed, with no time filter."""
+    """`rewrite=False` skips the LLM call: the query is searched as typed, with no time filter.
+    With a namespace, only user-wide memories and that namespace's are searched (ADR 0021)."""
     with tracer.start_as_current_span("recall"):
         if rewrite:
             with tracer.start_as_current_span("recall.rewrite"):
@@ -112,18 +123,31 @@ async def recall(
             q = Query(search_text=query)
         if q.as_of and q.as_of.tzinfo is None:  # the LLM gives a bare date; the DB wants a zone
             q = q.model_copy(update={"as_of": q.as_of.replace(tzinfo=UTC)})
-        with tracer.start_as_current_span("recall.search"):
-            memories = await store.search(
+
+        # A summary can mention a fact that has since changed ("said they live in Bangalore"),
+        # so summaries are searched only when the question is about past work, and then on
+        # their own, so the facts can't crowd them out of the top results (ADR 0021).
+        async def find(kinds: tuple[Kind, ...], limit: int) -> list[Memory]:
+            return await store.search(
                 user_id,
                 q.search_text,
-                limit=TOP_K,
+                limit=limit,
                 as_of=q.as_of,
                 retriever=retriever,
                 rank=rank,
                 now=now,
+                namespace=namespace,
+                kinds=kinds,
             )
+
+        with tracer.start_as_current_span("recall.search"):
+            memories = await find(("episode",), TOP_K) if q.past_sessions else []
+            # Facts fill what the summaries leave, but always at least half: with no summaries
+            # (the evaluation never writes any) a past-work question still gets all 10 facts.
+            memories += await find(("fact",), max(TOP_K // 2, TOP_K - len(memories)))
         with tracer.start_as_current_span("recall.expand_and_pack"):
             turn_ids = list(dict.fromkeys(i for m in memories for i in m.source_turn_ids))
             turns = await store.get_turns(user_id, turn_ids) if mode != "facts" else []
-            shown_memories = memories if mode != "turns" else []
-            return Recall(pack(shown_memories, turns, budget), shown_memories, turns, q)
+            shown = memories if mode != "turns" else []
+            text = pack(shown, turns, budget, sessions_first=q.past_sessions)
+            return Recall(text, shown, turns, q)

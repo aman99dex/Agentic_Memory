@@ -11,14 +11,14 @@ WORKDIR /app
 
 # Dependencies first: this layer only rebuilds when the lockfile changes.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --extra server --no-install-project
 
 COPY src ./src
-COPY migrations ./migrations
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --extra server
 
 # Download the embedding model now, so a cold start doesn't spend seconds fetching it (ADR 0009).
-RUN python -c "from agentic_memory.embedder import Embedder; Embedder()"
+# The model loads on first use (ADR 0022), so embed something to fetch it here.
+RUN python -c "from agentic_memory.embedder import Embedder; Embedder().embed(['warm up'])"
 
 RUN useradd --system --no-create-home app && chown -R app /models
 USER app

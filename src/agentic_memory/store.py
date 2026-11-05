@@ -1,51 +1,25 @@
-"""MemoryStore: the only code that talks SQL about memories (ADRs 0001-0005)."""
+"""What every store is: the shared types and the `Store` interface (ADRs 0019-0021).
 
-import asyncio
+`PostgresStore` (postgres_store.py) serves products and the evaluation; `SqliteStore`
+(sqlite_store.py) is the zero-setup local default. This module imports neither database
+driver, so a hook that only reads SQLite stays fast.
+"""
+
 import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Literal
+from datetime import datetime
+from typing import Literal, Protocol
 
-import numpy as np
-from psycopg import AsyncConnection
-from psycopg.rows import class_row
-from psycopg_pool import AsyncConnectionPool
-
-from agentic_memory.embedder import Embedder
-from agentic_memory.fusion import rrf_scores
 from agentic_memory.rank import Rank
 
 Retriever = Literal["hybrid", "vector", "text"]
-
-# A fact is visible at time T if it had started and not yet ended. as_of = NULL means "now":
-# 'infinity' makes valid_to > T false for every closed fact, so only current ones remain.
-# Archived facts (ADR 0016) are hidden from search but still exist and still show in history.
-VISIBLE = """user_id = %(user_id)s
-    AND archived_at IS NULL
-    AND valid_from <= coalesce(%(as_of)s::timestamptz, 'infinity')
-    AND (valid_to IS NULL OR valid_to > coalesce(%(as_of)s::timestamptz, 'infinity'))"""
-
-# Keyword search tries every word (AND) first and falls back to any word (OR) only when AND
-# matches nothing (ADR 0011). 'which city do I live in?': 'citi' & 'live', then 'citi' | 'live'.
-
-# Every f-string below only glues in these constants. User input never enters the SQL text:
-# it travels separately as a bound %(name)s parameter, so it can't be read as SQL.
-AND_TSQUERY = "websearch_to_tsquery('english', %(query)s)"
-OR_TSQUERY = """(SELECT string_agg(quote_literal(w), ' | ')
-    FROM unnest(tsvector_to_array(to_tsvector('english', %(query)s))) w)::tsquery"""
-
-# Every version of the given facts: walk superseded_by forwards and backwards (ADR 0004).
-CHAIN = """WITH RECURSIVE chain AS (
-    SELECT id FROM memories WHERE user_id = %(u)s AND id = ANY(%(ids)s)
-    UNION
-    SELECT m.id FROM memories m, chain c
-    WHERE m.user_id = %(u)s
-      AND (m.superseded_by = c.id
-           OR m.id = (SELECT superseded_by FROM memories WHERE id = c.id)))"""
-
-COLUMNS = "id, user_id, content, source_turn_ids, valid_from, valid_to, superseded_by, created_at"
+# fact: one durable statement. episode: a rolling summary of one session. profile: a short
+# portrait of the user (namespace NULL) or of one project (ADR 0021).
+Kind = Literal["fact", "episode", "profile"]
+SEARCHABLE: tuple[Kind, ...] = ("fact", "episode")  # profiles come back through `context`
+MAX_ATTEMPTS = 5  # a turn that failed this often stops being retried (ADR 0020)
 
 
 @dataclass(frozen=True)
@@ -58,6 +32,8 @@ class Memory:
     valid_to: datetime | None
     superseded_by: int | None
     created_at: datetime
+    namespace: str | None = None
+    kind: str = "fact"
 
 
 @dataclass(frozen=True)
@@ -67,17 +43,17 @@ class Turn:
     user_text: str
     assistant_text: str
     occurred_at: datetime
+    namespace: str | None = None
 
 
-class MemoryStore:
-    def __init__(self, pool: AsyncConnectionPool, embedder: Embedder) -> None:
-        self._pool = pool
-        self._embedder = embedder
+def turn_hash(session_id: str, occurred_at: datetime, user_text: str, assistant_text: str) -> str:
+    """The idempotency key of one round. JSON keeps field boundaries: ("ab","c") != ("a","bc")."""
+    fingerprint = json.dumps([session_id, occurred_at.isoformat(), user_text, assistant_text])
+    return hashlib.sha256(fingerprint.encode()).hexdigest()
 
-    async def _embed(self, text: str) -> np.ndarray:
-        # The model is CPU work that would freeze every other request; run it on a thread.
-        (vector,) = await asyncio.to_thread(self._embedder.embed, [text])
-        return np.array(vector, dtype=np.float32)
+
+class Store(Protocol):
+    """Everything the write path, read path, worker and API need from a database."""
 
     async def add_turn(
         self,
@@ -86,131 +62,30 @@ class MemoryStore:
         user_text: str,
         assistant_text: str,
         occurred_at: datetime,
-    ) -> tuple[int, bool]:
-        """Store one round. Returns (turn id, True if new). The same round twice is stored once."""
-        # JSON keeps field boundaries: ("ab", "c") and ("a", "bc") must not hash the same.
-        fingerprint = json.dumps([session_id, occurred_at.isoformat(), user_text, assistant_text])
-        content_hash = hashlib.sha256(fingerprint.encode()).hexdigest()
-        embedding = await self._embed(f"{user_text} {assistant_text}")
-        async with self._pool.connection() as conn:
-            # The unique index, not a check-then-insert, is what makes this safe under races.
-            cur = await conn.execute(
-                """INSERT INTO turns (user_id, session_id, user_text, assistant_text,
-                                      occurred_at, content_hash, embedding, embedding_model)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (user_id, content_hash) DO NOTHING RETURNING id""",
-                (
-                    user_id,
-                    session_id,
-                    user_text,
-                    assistant_text,
-                    occurred_at,
-                    content_hash,
-                    embedding,
-                    self._embedder.model_name,
-                ),
-            )
-            if row := await cur.fetchone():
-                return int(row[0]), True
-            # A repeat: DO NOTHING returned no row. A fresh statement sees the first copy.
-            cur = await conn.execute(
-                "SELECT id FROM turns WHERE user_id = %s AND content_hash = %s",
-                (user_id, content_hash),
-            )
-            row = await cur.fetchone()
-        assert row is not None
-        return int(row[0]), False
-
-    async def get_turns(self, user_id: str, turn_ids: Sequence[int]) -> list[Turn]:
-        """The original rounds, in the order asked for. Ids that aren't this user's are skipped."""
-        async with self._pool.connection() as conn:
-            cur = conn.cursor(row_factory=class_row(Turn))
-            await cur.execute(
-                """SELECT id, session_id, user_text, assistant_text, occurred_at
-                   FROM turns WHERE user_id = %s AND id = ANY(%s)""",
-                (user_id, list(turn_ids)),
-            )
-            rows = {t.id: t for t in await cur.fetchall()}
-        return [rows[i] for i in turn_ids if i in rows]
-
-    async def turn_has_memories(self, user_id: str, turn_id: int) -> bool:
-        """True if any fact was written from this turn (a crash before that leaves it False)."""
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                """SELECT EXISTS (SELECT 1 FROM memories
-                          WHERE user_id = %s AND %s = ANY(source_turn_ids))""",
-                (user_id, turn_id),
-            )
-            row = await cur.fetchone()
-        assert row is not None
-        return bool(row[0])
-
+        namespace: str | None = None,
+    ) -> tuple[int, bool]: ...
+    async def get_turns(self, user_id: str, turn_ids: Sequence[int]) -> list[Turn]: ...
+    async def turn_processed(self, user_id: str, turn_id: int) -> bool: ...
+    async def pending_users(self, limit: int = 100) -> list[str]: ...
+    async def pending_turns(self, user_id: str, limit: int = 20) -> list[Turn]: ...
+    async def finish_turn(self, turn_id: int, now: datetime, error: str | None = None) -> None: ...
+    async def claim(self, user_id: str, holder: str, now: datetime, seconds: float) -> bool: ...
+    async def release(self, user_id: str, holder: str) -> None: ...
+    async def session_turns(
+        self, user_id: str, session_id: str, after_id: int = 0
+    ) -> list[Turn]: ...
     async def add(
-        self, user_id: str, content: str, source_turn_ids: Sequence[int], valid_from: datetime
-    ) -> int:
-        embedding = await self._embed(content)
-        async with self._pool.connection() as conn:
-            return await self._insert(
-                conn, user_id, content, source_turn_ids, valid_from, embedding
-            )
-
-    async def _insert(
         self,
-        conn: AsyncConnection,
         user_id: str,
         content: str,
         source_turn_ids: Sequence[int],
         valid_from: datetime,
-        embedding: np.ndarray,
-    ) -> int:
-        cur = await conn.execute(
-            """INSERT INTO memories
-                   (user_id, content, source_turn_ids, valid_from, embedding, embedding_model)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (
-                user_id,
-                content,
-                list(source_turn_ids),
-                valid_from,
-                embedding,
-                self._embedder.model_name,
-            ),
-        )
-        row = await cur.fetchone()
-        assert row is not None
-        return int(row[0])
-
-    async def get(self, user_id: str, memory_id: int) -> Memory | None:
-        async with self._pool.connection() as conn:
-            cur = conn.cursor(row_factory=class_row(Memory))
-            await cur.execute(
-                f"SELECT {COLUMNS} FROM memories WHERE id = %s AND user_id = %s",  # noqa: S608
-                (memory_id, user_id),
-            )
-            return await cur.fetchone()
-
+        namespace: str | None = None,
+    ) -> int: ...
+    async def get(self, user_id: str, memory_id: int) -> Memory | None: ...
     async def invalidate(
         self, user_id: str, memory_id: int, at: datetime, superseded_by: int | None = None
-    ) -> bool:
-        """Close a current fact. False if it doesn't exist, isn't yours, or is already closed."""
-        async with self._pool.connection() as conn:
-            return await self._close(conn, user_id, memory_id, at, superseded_by)
-
-    async def _close(
-        self,
-        conn: AsyncConnection,
-        user_id: str,
-        memory_id: int,
-        at: datetime,
-        superseded_by: int | None,
-    ) -> bool:
-        cur = await conn.execute(
-            """UPDATE memories SET valid_to = %s, superseded_by = %s
-               WHERE id = %s AND user_id = %s AND valid_to IS NULL""",
-            (at, superseded_by, memory_id, user_id),
-        )
-        return cur.rowcount == 1
-
+    ) -> bool: ...
     async def supersede(
         self,
         user_id: str,
@@ -218,155 +93,17 @@ class MemoryStore:
         content: str,
         source_turn_ids: Sequence[int],
         valid_from: datetime,
-    ) -> int:
-        """Insert the new fact and close the old one in one transaction (Lesson 1.3)."""
-        embedding = await self._embed(content)
-        async with self._pool.connection() as conn, conn.transaction():
-            new_id = await self._insert(
-                conn, user_id, content, source_turn_ids, valid_from, embedding
-            )
-            if not await self._close(conn, user_id, old_id, valid_from, new_id):
-                raise LookupError(f"memory {old_id} is not a current fact of {user_id}")
-            return new_id
-
-    async def history(self, user_id: str, memory_id: int) -> list[Memory]:
-        """Every version of one fact, oldest first (the chain linked by superseded_by)."""
-        async with self._pool.connection() as conn:
-            cur = conn.cursor(row_factory=class_row(Memory))
-            await cur.execute(
-                f"""{CHAIN} SELECT {COLUMNS} FROM memories
-                    WHERE id IN (SELECT id FROM chain) ORDER BY valid_from, id""",  # noqa: S608
-                {"u": user_id, "ids": [memory_id]},
-            )
-            return await cur.fetchall()
-
-    async def drop(self, user_id: str, memory_id: int) -> bool:
-        """Delete one fact row (no history, no turns). Only for the history-off ablation."""
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                "DELETE FROM memories WHERE id = %s AND user_id = %s", (memory_id, user_id)
-            )
-            return cur.rowcount == 1
-
+        namespace: str | None = None,
+    ) -> int: ...
+    async def drop(self, user_id: str, memory_id: int) -> bool: ...
+    async def history(self, user_id: str, memory_id: int) -> list[Memory]: ...
     async def forget(
         self, user_id: str, memory_ids: Sequence[int] | None = None
-    ) -> tuple[int, int]:
-        """Hard delete (ADR 0004, 0014). Returns (memories, turns) deleted.
-
-        With ids: those facts, every older/newer version of them, the turns they came from,
-        and every other fact that came from those turns (their source words are gone).
-        With None: everything this user has.
-        """
-        params = {"u": user_id, "ids": list(memory_ids or [])}
-        async with self._pool.connection() as conn, conn.transaction():
-            if memory_ids is None:
-                mems = (
-                    await conn.execute("DELETE FROM memories WHERE user_id = %s", (user_id,))
-                ).rowcount
-                turns = (
-                    await conn.execute("DELETE FROM turns WHERE user_id = %s", (user_id,))
-                ).rowcount
-            else:
-                cur = await conn.execute(
-                    f"""{CHAIN} SELECT coalesce(array_agg(DISTINCT t), '{{}}'::bigint[])
-                        FROM memories m, unnest(m.source_turn_ids) t
-                        WHERE m.id IN (SELECT id FROM chain)""",  # noqa: S608
-                    params,
-                )
-                row = await cur.fetchone()
-                assert row is not None
-                turn_ids: list[int] = row[0]
-                # One statement: its snapshot still sees the chain while the rows are removed.
-                cur = await conn.execute(
-                    f"""{CHAIN} DELETE FROM memories WHERE user_id = %(u)s
-                        AND (id IN (SELECT id FROM chain)
-                             OR source_turn_ids && %(turns)s::bigint[])""",  # noqa: S608
-                    {**params, "turns": turn_ids},
-                )
-                mems = cur.rowcount
-                cur = await conn.execute(
-                    "DELETE FROM turns WHERE user_id = %s AND id = ANY(%s)", (user_id, turn_ids)
-                )
-                turns = cur.rowcount
-            await conn.execute(
-                "INSERT INTO deletions (user_id, memories, turns) VALUES (%s, %s, %s)",
-                (user_id, mems, turns),
-            )
-        return mems, turns
-
-    async def _rerank(
-        self, ids: list[int], scores: dict[int, float], rank: Rank, now: datetime
-    ) -> list[int]:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                """SELECT id, importance, coalesce(last_accessed_at, valid_from)
-                   FROM memories WHERE id = ANY(%s)""",
-                (ids,),
-            )
-            rows = await cur.fetchall()
-        adjusted = {
-            i: scores[i] * rank.factor(float(imp), (now - touched).total_seconds() / 86400)
-            for i, imp, touched in rows
-        }
-        return sorted(ids, key=adjusted.__getitem__, reverse=True)
-
+    ) -> tuple[int, int]: ...
     async def touch(
         self, user_id: str, memory_ids: Sequence[int], at: datetime, rank: Rank
-    ) -> None:
-        """Record that these facts were just recalled: more important, and fresh again."""
-        if not memory_ids:
-            return
-        async with self._pool.connection() as conn:
-            await conn.execute(
-                """UPDATE memories
-                   SET importance = least(importance + %s, %s), last_accessed_at = %s
-                   WHERE user_id = %s AND id = ANY(%s)""",
-                (rank.access_boost, rank.importance_cap, at, user_id, list(memory_ids)),
-            )
-
-    async def unarchive(self, user_id: str, memory_ids: Sequence[int]) -> int:
-        """Bring archived facts back into search. Returns how many were restored."""
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                """UPDATE memories SET archived_at = NULL
-                   WHERE user_id = %s AND id = ANY(%s) AND archived_at IS NOT NULL""",
-                (user_id, list(memory_ids)),
-            )
-            return cur.rowcount
-
-    async def search_vector(
-        self, user_id: str, query: str, limit: int = 20, as_of: datetime | None = None
-    ) -> list[int]:
-        embedding = await self._embed(query)
-        async with self._pool.connection() as conn, conn.transaction():
-            # Without this, a tenant filter after HNSW's 40 candidates comes back short (ADR 0001).
-            await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
-            # relaxed_order can return rows slightly out of order, so sort again outside.
-            cur = await conn.execute(
-                f"""WITH hits AS MATERIALIZED (
-                        SELECT id, embedding <=> %(embedding)s AS distance FROM memories
-                        WHERE {VISIBLE} ORDER BY distance LIMIT %(limit)s)
-                    SELECT id FROM hits ORDER BY distance""",  # noqa: S608
-                {"embedding": embedding, "user_id": user_id, "as_of": as_of, "limit": limit},
-            )
-            return [row[0] for row in await cur.fetchall()]
-
-    async def search_text(
-        self, user_id: str, query: str, limit: int = 20, as_of: datetime | None = None
-    ) -> list[int]:
-        params = {"query": query, "user_id": user_id, "as_of": as_of, "limit": limit}
-        async with self._pool.connection() as conn:
-            for tsquery in (AND_TSQUERY, OR_TSQUERY):
-                cur = await conn.execute(
-                    f"""SELECT id FROM memories, (SELECT {tsquery} AS q) AS t
-                        WHERE {VISIBLE} AND tsv @@ q
-                        ORDER BY ts_rank_cd(tsv, q) DESC, id LIMIT %(limit)s""",  # noqa: S608
-                    params,
-                )
-                if ids := [row[0] for row in await cur.fetchall()]:
-                    return ids
-        return []
-
+    ) -> None: ...
+    async def unarchive(self, user_id: str, memory_ids: Sequence[int]) -> int: ...
     async def search(
         self,
         user_id: str,
@@ -376,33 +113,56 @@ class MemoryStore:
         retriever: Retriever = "hybrid",
         rank: Rank | None = None,
         now: datetime | None = None,
-    ) -> list[Memory]:
-        """Hybrid search: both retrievers at once, fused with RRF (ADR 0005).
+        namespace: str | None = None,
+        kinds: Sequence[Kind] = SEARCHABLE,
+    ) -> list[Memory]: ...
+    async def derived(
+        self, user_id: str, kind: Kind, namespace: str | None = None, session_id: str | None = None
+    ) -> Memory | None: ...
+    async def put_derived(
+        self,
+        user_id: str,
+        kind: Kind,
+        content: str,
+        source_turn_ids: Sequence[int],
+        valid_from: datetime,
+        namespace: str | None = None,
+        session_id: str | None = None,
+    ) -> int: ...
+    async def current_facts(
+        self, user_id: str, namespace: str | None, limit: int = 200
+    ) -> list[Memory]: ...
+    async def recent_episodes(
+        self, user_id: str, namespace: str | None, limit: int = 3
+    ) -> list[Memory]: ...
+    async def add_api_key(self, tenant: str, key_sha256: str) -> None: ...
+    async def tenant_for_key(self, key_sha256: str) -> str | None: ...
+    async def revoke_api_keys(self, tenant: str, now: datetime) -> int: ...
+    async def stats(self, user_id: str) -> dict[str, object]: ...
 
-        `retriever` exists so the evaluation can switch one half off (ablation, ADR 0015).
-        With `rank`, the fused candidates are reordered by importance and recency (ADR 0016);
-        `now` is the moment age is measured from (default: the real clock).
-        """
-        if retriever == "vector":
-            rankings = [await self.search_vector(user_id, query, as_of=as_of)]
-        elif retriever == "text":
-            rankings = [await self.search_text(user_id, query, as_of=as_of)]
-        else:
-            by_meaning, by_words = await asyncio.gather(
-                self.search_vector(user_id, query, as_of=as_of),
-                self.search_text(user_id, query, as_of=as_of),
-            )
-            rankings = [by_meaning, by_words]
-        scores = rrf_scores(rankings)
-        ids = sorted(scores, key=scores.__getitem__, reverse=True)
-        if rank is not None and ids:
-            ids = await self._rerank(ids, scores, rank, now or datetime.now(UTC))
-        ids = ids[:limit]
-        async with self._pool.connection() as conn:
-            cur = conn.cursor(row_factory=class_row(Memory))
-            await cur.execute(
-                f"SELECT {COLUMNS} FROM memories WHERE id = ANY(%s)",  # noqa: S608
-                (ids,),
-            )
-            rows = {m.id: m for m in await cur.fetchall()}
-        return [rows[i] for i in ids]
+
+# What `agentic-memory status` shows. Plain SQL both databases speak; {p} is the placeholder.
+STATS_SQL = f"""SELECT
+    (SELECT count(*) FROM memories WHERE user_id = {{p}} AND kind = 'fact'
+        AND valid_to IS NULL AND archived_at IS NULL),
+    (SELECT count(*) FROM memories WHERE user_id = {{p}} AND kind = 'fact'
+        AND valid_to IS NOT NULL),
+    (SELECT count(*) FROM memories WHERE user_id = {{p}} AND kind = 'episode'),
+    (SELECT count(*) FROM memories WHERE user_id = {{p}} AND kind = 'profile'),
+    (SELECT count(*) FROM turns WHERE user_id = {{p}}),
+    (SELECT count(*) FROM turns WHERE user_id = {{p}} AND processed_at IS NULL
+        AND attempts < {MAX_ATTEMPTS}),
+    (SELECT count(*) FROM turns WHERE user_id = {{p}} AND processed_at IS NULL
+        AND attempts >= {MAX_ATTEMPTS}),
+    (SELECT last_error FROM turns WHERE user_id = {{p}} AND last_error IS NOT NULL
+        ORDER BY id DESC LIMIT 1)"""  # noqa: S608 - only a constant is glued in
+STATS_KEYS = (
+    "current facts",
+    "closed facts",
+    "sessions",
+    "profiles",
+    "turns",
+    "queued",
+    "failed",
+    "last error",
+)

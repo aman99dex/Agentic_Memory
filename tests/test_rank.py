@@ -9,9 +9,9 @@ from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.decay import decay
 from agentic_memory.embedder import Embedder
+from agentic_memory.postgres_store import MemoryStore
 from agentic_memory.rank import Rank
 from agentic_memory.service import MemoryService
-from agentic_memory.store import MemoryStore
 
 NOW = datetime(2026, 10, 1, tzinfo=UTC)
 LONG_AGO = NOW - timedelta(days=730)

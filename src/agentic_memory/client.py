@@ -1,16 +1,18 @@
-"""Python SDK: a thin client for the REST API (ADR 0014).
+"""Python SDK: a thin client for the REST API (ADRs 0014, 0023). Needs only httpx:
+`pip install agentic-memory` installs this and nothing of the server.
 
     from agentic_memory.client import Memory
 
     mem = Memory("aman", base_url="http://127.0.0.1:8000", api_key="...")
-    mem.add("I moved to Pune.")
+    mem.add("I moved to Pune.", "Congrats!")       # returns at once; facts appear in seconds
+    prompt_context = mem.context()                  # profile + recent sessions, no LLM call
     print(mem.search("Where do I live?").text)
 
 `base_url` and `api_key` default to MEMORY_URL and MEMORY_API_KEY (or API_KEY).
 """
 
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import TracebackType
@@ -29,16 +31,21 @@ class SearchResult:
 
 
 class Memory:
+    """One end user's memory. `namespace` scopes it to one project, app or agent: memories
+    about the user in general are shared across namespaces, the rest stay in theirs."""
+
     def __init__(
         self,
         user_id: str,
         base_url: str | None = None,
         api_key: str | None = None,
         *,
+        namespace: str | None = None,
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.user_id = user_id
+        self.namespace = namespace
         self._http = httpx.Client(
             base_url=base_url or os.environ.get("MEMORY_URL", "http://127.0.0.1:8000"),
             headers={"X-API-Key": api_key or _key_from_env()},
@@ -58,8 +65,11 @@ class Memory:
         *,
         session_id: str = "sdk",
         occurred_at: datetime | None = None,
-    ) -> list[dict[str, Any]]:
-        """Remember one round of conversation. Returns what was done with each fact found.
+        wait: bool = False,
+    ) -> dict[str, Any]:
+        """Remember one round of conversation. Returns at once with {"turn_id", "queued"}; the
+        server turns it into facts in the background. `wait=True` waits and adds "steps":
+        what was done with each fact found.
 
         The same round is stored once, keyed on `occurred_at`: when retrying a failed call,
         pass the same `occurred_at` as the first attempt (the default is the current time).
@@ -71,9 +81,40 @@ class Memory:
             "user_text": text,
             "assistant_text": reply,
             "occurred_at": when.isoformat(),
+            "namespace": self.namespace,
+            "wait": wait,
         }
-        steps: list[dict[str, Any]] = self._send("POST", "/memories:ingest", json=body)["steps"]
-        return steps
+        saved: dict[str, Any] = self._send("POST", "/memories:ingest", json=body)
+        return saved
+
+    def import_turns(self, turns: Iterable[dict[str, Any]]) -> dict[str, int]:
+        """Queue past rounds in bulk: dicts with session_id, user_text, assistant_text and
+        occurred_at (a datetime or ISO string). Re-importing the same rounds is a no-op."""
+        rows = [
+            {**t, "occurred_at": t["occurred_at"].isoformat()}
+            if isinstance(t["occurred_at"], datetime)
+            else t
+            for t in turns
+        ]
+        totals = {"stored": 0, "duplicates": 0}
+        for start in range(0, len(rows), 1000):  # the server takes 1000 per request
+            r = self._send(
+                "POST",
+                "/memories:import",
+                json={
+                    "user_id": self.user_id,
+                    "namespace": self.namespace,
+                    "turns": rows[start : start + 1000],
+                },
+            )
+            totals = {k: totals[k] + r[k] for k in totals}
+        return totals
+
+    def context(self, budget: int = 1200) -> str:
+        """Profile, project brief and latest sessions, ready for a system prompt. No LLM call."""
+        body = {"user_id": self.user_id, "namespace": self.namespace, "budget": budget}
+        text: str = self._send("POST", "/memories:context", json=body)["text"]
+        return text
 
     def search(
         self,
@@ -91,6 +132,7 @@ class Memory:
             "budget": budget,
             "mode": mode,
             "rewrite": rewrite,
+            "namespace": self.namespace,
         }
         r = self._send("POST", "/memories:search", json=body)
         return SearchResult(r["text"], r["memories"], r["turns"], r["as_of"], r["search_text"])

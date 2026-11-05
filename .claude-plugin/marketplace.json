@@ -1,0 +1,11 @@
+{
+  "name": "agentic-memory",
+  "owner": { "name": "Aman Gupta" },
+  "plugins": [
+    {
+      "name": "agentic-memory",
+      "source": "./plugin",
+      "description": "Long-term memory for Claude Code: remembers you and each project across sessions, automatically."
+    }
+  ]
+}

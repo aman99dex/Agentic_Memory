@@ -20,17 +20,44 @@ def test_add_sends_the_round_with_key_and_a_stable_timestamp():
 
     def handler(request):
         seen.append(request)
-        return httpx.Response(200, json={"steps": [{"fact": "f", "action": "ADD"}]})
+        return httpx.Response(200, json={"turn_id": 7, "queued": True})
 
-    steps = client(handler).add("I moved to Pune.", occurred_at=WHEN)
+    saved = client(handler).add("I moved to Pune.", occurred_at=WHEN)
 
-    assert steps == [{"fact": "f", "action": "ADD"}]
+    assert saved == {"turn_id": 7, "queued": True}
     (request,) = seen
     assert request.url.path == "/memories:ingest"
     assert request.headers["x-api-key"] == "secret"
     body = json.loads(request.content)
     assert body["user_id"] == "aman" and body["user_text"] == "I moved to Pune."
     assert body["occurred_at"] == WHEN.isoformat()  # a retry with the same value is idempotent
+    assert body["wait"] is False and body["namespace"] is None  # background by default
+
+
+def test_namespace_rides_on_every_call_and_context_returns_text():
+    bodies: list[dict] = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"text": "About the user: ..."})
+
+    mem = Memory("aman", "http://t", "k", namespace="shop", transport=httpx.MockTransport(handler))
+    assert mem.context(budget=300) == "About the user: ..."
+    assert bodies == [{"user_id": "aman", "namespace": "shop", "budget": 300}]
+
+
+def test_import_sends_iso_times_in_chunks_of_1000():
+    sizes: list[int] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sizes.append(len(body["turns"]))
+        assert body["turns"][0]["occurred_at"] == WHEN.isoformat()
+        return httpx.Response(200, json={"stored": len(body["turns"]), "duplicates": 0})
+
+    rows = [{"session_id": "s", "user_text": f"t{i}", "occurred_at": WHEN} for i in range(1500)]
+    assert client(handler).import_turns(rows) == {"stored": 1500, "duplicates": 0}
+    assert sizes == [1000, 500]
 
 
 def test_search_parses_the_result_and_passes_options():

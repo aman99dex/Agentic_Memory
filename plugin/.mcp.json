@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agentic-memory": {
+      "command": "agentic-memory",
+      "args": ["mcp", "--project", "${CLAUDE_PROJECT_DIR}"]
+    }
+  }
+}

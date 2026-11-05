@@ -85,25 +85,35 @@ second, never one without the other.
   unclear; don't patch it.
 
 ## Stack (see the ADRs for why)
-Python 3.12–3.13 + uv · Postgres 18 + pgvector 0.8.7 (HNSW, `hnsw.iterative_scan` on
-tenant queries) · built-in `tsvector` + `ts_rank_cd` · RRF k=60 · fastembed
+Python 3.12–3.13 + uv · SQLite (FTS5 BM25, numpy exact vectors) locally, Postgres 18 +
+pgvector 0.8.7 (HNSW, `hnsw.iterative_scan` on tenant queries) for servers · built-in
+`tsvector` + `ts_rank_cd` · RRF k=60 · fastembed
 bge-small-en-v1.5 · LangGraph 1.x · `init_chat_model` · FastAPI · `mcp` 2.x · psycopg 3
 async, plain SQL migrations · Cloud Run + Neon.
 
 ## Commands
 ```bash
-uv sync                      # install
+uv sync                      # install (the dev group pulls in agentic-memory[server])
 docker compose up -d db      # local Postgres (Docker Desktop must be running)
-uv run pytest                # tests (testcontainers starts its own Postgres)
+uv run --env-file .env python -m pytest   # Postgres via testcontainers + SQLite; real Haiku
 uv run ruff check . && uv run ruff format --check . && uv run mypy   # what CI runs
+uv run --env-file .env agentic-memory status    # the CLI: setup, status, context, recall, ...
+claude -p "hi" --plugin-dir plugin              # try the plugin from this checkout
 ```
+Store changes go in both `postgres_store.py` and `sqlite_store.py`; the `any_store` fixture runs
+store tests on both. Never put `ANTHROPIC_API_KEY` in the environment of a `claude` process
+you start for testing: Claude Code would bill that key instead of Aman's subscription. Put it
+in `$AGENTIC_MEMORY_HOME/config.env` instead.
 On Windows, Docker Desktop lives at
 `%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe`.
 
 ## Layout
 - `src/agentic_memory/`: the package
 - `tests/`: pytest; integration tests run against real Postgres, never mocks
-- `migrations/`: `NNNN_name.sql`, forward-only (ADR 0010)
+- `src/agentic_memory/migrations/{postgres,sqlite}/`: `NNNN_name.sql`, forward-only (ADR 0010);
+  inside the package so installed copies carry them (ADR 0019). A schema change needs both.
+- `plugin/` + `.claude-plugin/marketplace.json`: the Claude Code plugin (ADR 0022)
+- `examples/chat.py`: a product integration in about 20 lines (ADR 0023)
 - `eval/`: benchmark harness; `eval/results/*.json` is committed and `eval/cache/` is ignored
 - `docs/decisions/`: ADRs · `docs/learn/`: learning notes · `docs/progress.md`: session log
 - `archive/course-notebooks/`: the DeepLearning.AI course material. **Not part of the

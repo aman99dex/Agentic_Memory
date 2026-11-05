@@ -32,9 +32,10 @@ from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 from agentic_memory.embedder import Embedder
+from agentic_memory.postgres_store import MemoryStore
 from agentic_memory.rank import Rank
 from agentic_memory.read_path import _tokens, recall
-from agentic_memory.store import MemoryStore, Retriever
+from agentic_memory.store import Retriever
 from agentic_memory.write_path import (
     EXTRACT_PROMPT,
     RECONCILE_PROMPT,

@@ -3,27 +3,36 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phases 0-2 on `main`. Everything after is built, tested and UNCOMMITTED** (Phases 3-4, the
-  Phase 5 harness, rerank/decay, SDK, telemetry, load test, Docker, deploy workflow, docs).
-  The system works end to end: ingest a turn, it becomes versioned facts, recall returns
-  current facts + their source turns under a token budget, over REST, MCP and a Python SDK,
-  with hard delete, rerank by importance/recency and nightly archiving. Verified: 59 tests
-  (real Postgres + real Haiku 5.5), ruff/mypy clean, the Docker image builds and the compose
-  `migrate` + `api` services ran live (curl: auth, ingest, both search modes, importance rose).
+- **Phases 0-6 are on `main`. Phase 7 (usable by real people) is built and tested on branch
+  `phase-7-usable`, UNCOMMITTED.** Why: `docs/intent/usable-product.md`. ADRs 0019-0023,
+  `docs/learn/phase-7.md`.
+- What Phase 7 gives: local mode on SQLite (no Docker), saving that returns in milliseconds with
+  a background worker under per-user leases, user vs project scopes, session summaries and
+  profiles, a session-start briefing, a Claude Code plugin (three hooks + MCP), tenant API keys,
+  a client-only `pip install`, bulk import, an `agentic-memory` CLI.
+- Verified 2026-11-04: 110 tests (store tests on both SQLite and Postgres; real Haiku for the
+  LLM ones), ruff + strict mypy clean, Docker image builds and runs; a fresh `uv tool install`
+  plus two real `claude -p` sessions in a scratch repo (the second answered from memory, a
+  third folder got only the user-wide facts); `setup claude-code` installed the plugin into a
+  throwaway Claude config; `examples/chat.py` against a live Postgres server remembered
+  "vegetarian, Pune" across two runs.
 - **What has NOT been run:** the real evaluation (only a 1-question smoke test exists), the
-  ablations, LoCoMo through the LLMs, the locust load test, the CD workflow, the 50 hand labels
-  for the judge. So the README Results block still says "No evaluation run yet", and no number
-  in the plan's "Measured" column is filled in.
-- **Workflow (Aman, 2026-10-26): build everything end to end first, teach last.** No lessons
-  or check questions while building; concepts go into `docs/learn/phase-N.md`
-  (phase-2 to 6 are written and waiting to be taught).
-- Not built: the demo GIF (needs a human recording). Rerank and decay-forgetting were built
-  after the harness (ADR 0016); the Phase 5 ablation decides whether rerank stays on.
+  ablations, LoCoMo through the LLMs, the locust load test, the CD workflow, the 50 hand labels.
+  `setup claude-code` against the real GitHub repo (needs the plugin pushed to main), and the
+  plugin in Aman's own Claude Code (his call: it would capture every session he runs).
+- **Workflow (Aman, 2026-10-26): build everything end to end first, teach last.**
+  `docs/learn/phase-2..7.md` are written and waiting to be taught.
 
 ## Next session: start here
-1. Ask whether to commit + push (Aman's pattern: push to `main` directly), then tag `v0.1.0`
-   only once real results are in the README.
-2. **Run the evaluation, on an idle machine** (the first attempt made Aman's machine lag):
+1. Ask whether to commit + push `phase-7-usable` (Aman's pattern: push to `main` directly).
+   `uv tool install ... @ git+https://github.com/aman99dex/Agentic_Memory` and
+   `setup claude-code` only work for others once it is on main.
+2. **Run the evaluation, on an idle machine** (the first attempt made Aman's machine lag).
+   Phase 7 changed the extraction schema (a `scope` per fact) and the recall rewrite
+   (`past_sessions`), so every cached extraction is stale: the first run re-extracts.
+   The harness replays turns with `ingest_turn` and never runs the worker, so it measures
+   facts + turns without session summaries or profiles; an `--episodes` ablation that runs
+   `Worker.summarize_session` per haystack session is the obvious next comparison.
    `uv run --env-file .env python -m eval.lme --n 12 --name pilot-12 --concurrency 2`, then the
    ablations (`--retriever vector|text`, `--no-history`, `--no-rerank`, `--systems ours`), then
    `--dataset locomo`. Render with `python -m eval.report <names> --readme`. If `--no-rerank`
@@ -40,6 +49,51 @@ Newest entry first. Every session ends by adding one entry here.
 ## Open questions
 - None. LLM: Aman's personal Anthropic key is in `.env` (gitignored, verified working with a
   1-token call), Haiku 5.5 for every role (ADR 0012). Judge for Phase 5 still pinned (ADR 0007).
+
+---
+
+## 2026-11-04: Phase 7, usable by real people (uncommitted, branch phase-7-usable)
+**Why.** Aman asked for a brutal comparison with TencentDB Agent Memory, Mastra Observational
+Memory and Mem0, then for the system to be usable before any evaluation. A dogfood run of a
+developer's week showed: five setup steps, nothing saved unless the agent calls `remember`,
+1.4-6.2 s per save, no project scope, no memory of what happened, one shared key.
+
+**Done**
+- SQLite local mode (`sqlite_store.py`, ADR 0019); `store.py` split into types/interface,
+  `postgres_store.py`, `db.py`; migrations moved into the package; Postgres migration 0005.
+- Background saving: queue in the turns table, `ingest_leases`, `worker.py` (ADR 0020).
+- Scopes, episodes, profiles, `context.py` (ADR 0021); `past_sessions` in the recall rewrite.
+- `cli.py` (`agentic-memory`): setup, status, context, recall, import, worker, serve, mcp,
+  migrate, keys, hook. `plugin/` + `.claude-plugin/marketplace.json` (ADR 0022).
+- Tenant keys, `[server]` extra, `/memories:import`, `/memories:context`, SDK `context()` and
+  `import_turns()`, `examples/chat.py` (ADR 0023).
+- Tests: 59 -> 110. New: `test_queue_and_scopes.py`, `test_worker.py` (scripted model),
+  `test_local_mode.py` (hooks through the CLI, one real end-to-end run).
+
+**Measured** (same developer week, before -> after): save 1.4-6.2 s -> 1-6 ms; "moving off
+Black" 2 facts -> 1; session start had nothing -> profile, project brief, last 3 sessions;
+"what did we do on the first day?" nothing -> the Oct 1 session first. Session-start hook
+0.6 s warm, prompt hook 0.2-0.4 s. Client-only install: 8 packages.
+
+**Learned / surprising**
+- A summary searched alongside facts ranked "said they live in Bangalore" above the current
+  "lives in Pune". Summaries are history: searched only for past-work questions (ADR 0021).
+- Claude Code kills hook processes when `claude -p` exits, even `async: true` ones: the first
+  plugin stored nothing. The Stop hook now stores (no LLM) and starts a detached worker.
+- `logging.basicConfig` does nothing once any handler exists (pytest adds one): use a named
+  logger with its own FileHandler.
+- PowerShell pipes text with a UTF-8 BOM; read hook stdin as `utf-8-sig`.
+- A lazy embedder broke the Docker warm-up step (it no longer downloaded anything, so
+  `/models` didn't exist): the warm-up now embeds a word.
+- Haiku 5.5 replies can start with a thinking block: take the text blocks, not `content[0]`.
+- With 10 results shared between facts and summaries, facts crowded out the summaries:
+  summaries are now searched on their own for past-work questions.
+
+**Not done, and why**
+- The evaluation (next, per the intent doc), pushing (Aman's call), installing the plugin into
+  Aman's own Claude Code (it would capture all his sessions; his call), the demo GIF.
+- SQLite has no nightly decay job (archiving after a cold year); Postgres only for now.
+- Importing Claude Code's past transcripts: their format is undocumented and changes.
 
 ---
 

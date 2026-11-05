@@ -4,29 +4,34 @@ The LLM only picks a label; code follows the edges and runs the SQL.
 """
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
 
 from langchain.chat_models import init_chat_model
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
-from agentic_memory.store import Memory, MemoryStore
+from agentic_memory.store import Memory, Store, Turn
 from agentic_memory.telemetry import UsageCallback, traced, tracer
 
 CANDIDATES = 5  # how many similar stored facts the reconcile step gets to see
 
-EXTRACT_PROMPT = """You extract durable facts about the USER from one round of conversation.
+EXTRACT_PROMPT = """You extract durable facts about the USER, and about the project they are
+working in, from one round of conversation.
 Today's date for this conversation is {when}; turn relative dates ("last week") into absolute ones.
 
 Rules:
 - One short, self-contained sentence per fact, e.g. "The user lives in Pune."
 - Only things worth remembering later: identity, preferences, plans, relationships, events,
-  decisions, changes. Skip chit-chat, thanks, questions and anything the assistant said that
-  the user did not confirm.
-- A change is ONE fact stating the new truth ("The user eats chicken."), never also a separate
-  negation of the old one ("The user is no longer vegetarian.").
+  decisions, conventions, changes. Skip chit-chat, thanks, questions, one-off tasks ("rename
+  foo") and anything the assistant said that the user did not confirm.
+- A change is ONE fact stating the new truth, never also a separate negation of the old one:
+  "We're moving off Black, use ruff" -> only "The project formats code with ruff."
+  "I'm not vegetarian anymore" -> only "The user eats meat."
 - Say each thing once. Do not restate a fact with a date or detail added as a second fact.
+- scope: "user" when it is about the person and true wherever they are (identity, habits,
+  preferences, how they like to work). "project" when it is only about the current project,
+  product or codebase (its stack, hosting, conventions, decisions).
 - If there is nothing worth remembering, return an empty list.
 
 USER: {user_text}
@@ -50,8 +55,15 @@ Choose exactly one action:
 Action = Literal["ADD", "UPDATE", "INVALIDATE", "NOOP"]
 
 
+class Fact(BaseModel):
+    text: str = Field(description="One self-contained sentence")
+    scope: Literal["user", "project"] = Field(
+        default="user", description="user: true everywhere; project: only this project"
+    )
+
+
 class Facts(BaseModel):
-    facts: list[str] = Field(description="Self-contained sentences about the user")
+    facts: list[Fact] = Field(description="Durable facts about the user and their project")
 
 
 class Decision(BaseModel):
@@ -65,15 +77,17 @@ class Step(TypedDict):
     fact: str
     action: Action
     memory_id: int | None
+    namespace: str | None  # None: true for this user everywhere (ADR 0021)
 
 
 class State(TypedDict):
     user_id: str
     turn_id: int
+    namespace: str | None
     user_text: str
     assistant_text: str
     occurred_at: datetime
-    facts: list[str]
+    facts: list[Fact]
     steps: list[Step]
 
 
@@ -104,7 +118,7 @@ def _check(decision: Decision, shown: set[int]) -> tuple[Action, int | None]:
 
 
 def build_graph(
-    store: MemoryStore, extract_llm: Any, reconcile_llm: Any, keep_history: bool = True
+    store: Store, extract_llm: Any, reconcile_llm: Any, keep_history: bool = True
 ) -> Any:
     """`keep_history=False` deletes a replaced fact instead of closing it: the ablation that
     measures what bi-temporal history is worth (ADR 0015). Production always keeps it."""
@@ -115,38 +129,50 @@ def build_graph(
         out: Facts = await extractor.ainvoke(
             extract_prompt(state["occurred_at"], state["user_text"], state["assistant_text"])
         )
-        return {"facts": [f.strip() for f in out.facts if f.strip()]}
+        return {"facts": [f for f in out.facts if f.text.strip()]}
 
     async def reconcile(state: State) -> dict[str, Any]:
         steps: list[Step] = []
         for fact in state["facts"]:
-            found = await store.search(state["user_id"], fact, limit=CANDIDATES)
+            # Project facts only exist inside a namespace; without one, everything is user-wide.
+            ns = state["namespace"] if fact.scope == "project" else None
+            # Candidates: facts (never summaries) this one could replace, in the same reach.
+            found = await store.search(
+                state["user_id"],
+                fact.text,
+                limit=CANDIDATES,
+                namespace=state["namespace"],
+                kinds=("fact",),
+            )
             decision: Decision = await judge.ainvoke(
-                RECONCILE_PROMPT.format(candidates=_show(found), fact=fact)
+                RECONCILE_PROMPT.format(candidates=_show(found), fact=fact.text)
             )
             action, target = _check(decision, {m.id for m in found})
-            steps.append({"fact": fact, "action": action, "memory_id": target})
+            steps.append(
+                {"fact": fact.text.strip(), "action": action, "memory_id": target, "namespace": ns}
+            )
         return {"steps": steps}
 
     async def apply(state: State) -> dict[str, Any]:
         uid, at, src = state["user_id"], state["occurred_at"], [state["turn_id"]]
         for s in state["steps"]:
-            # ponytail: turns must arrive in time order; a fact older than the one it replaces
-            # trips the valid_to >= valid_from CHECK. Sort by occurred_at on bulk import.
+            # Turns are processed oldest first (ADR 0020); a late, older turn still can't break
+            # the valid_to >= valid_from check, because closing clamps to the fact's start.
+            ns = s["namespace"]
             if s["action"] == "ADD":
-                await store.add(uid, s["fact"], src, at)
+                await store.add(uid, s["fact"], src, at, ns)
             elif s["action"] == "UPDATE":
                 assert s["memory_id"] is not None
                 try:
                     if keep_history:
-                        await store.supersede(uid, s["memory_id"], s["fact"], src, at)
+                        await store.supersede(uid, s["memory_id"], s["fact"], src, at, ns)
                     else:
                         await store.drop(uid, s["memory_id"])
-                        await store.add(uid, s["fact"], src, at)
+                        await store.add(uid, s["fact"], src, at, ns)
                 except LookupError:
                     # Another fact in this same turn already replaced the target. The fact is
                     # still new information, so keep it (same rule as an unknown id in _check).
-                    await store.add(uid, s["fact"], src, at)
+                    await store.add(uid, s["fact"], src, at, ns)
             elif s["action"] == "INVALIDATE":
                 assert s["memory_id"] is not None
                 if keep_history:
@@ -172,36 +198,51 @@ def build_graph(
     return g.compile()
 
 
-async def ingest_turn(
-    store: MemoryStore,
-    graph: Any,
-    user_id: str,
-    session_id: str,
-    user_text: str,
-    assistant_text: str,
-    occurred_at: datetime,
-) -> list[Step]:
-    """Store the turn, then turn it into facts. Safe to call twice with the same round."""
-    with tracer.start_as_current_span("ingest") as span:
-        turn_id, is_new = await store.add_turn(
-            user_id, session_id, user_text, assistant_text, occurred_at
-        )
-        span.set_attribute("turn.is_new", is_new)
-        if not is_new and await store.turn_has_memories(user_id, turn_id):
-            return []  # already processed
-        # A repeat with no facts yet is retried: an earlier crash must not lose the turn for good.
-        # Retrying is safe because reconcile answers NOOP for facts that are already stored.
+async def process_turn(store: Store, graph: Any, user_id: str, turn: Turn) -> list[Step]:
+    """Turn one stored round into facts and mark it done (the worker's unit of work, ADR 0020).
+
+    Rerunning a turn that crashed half way is safe: reconcile answers NOOP for facts already
+    stored. A failure is left for the caller to record, so the turn is retried later.
+    """
+    with tracer.start_as_current_span("process_turn") as span:
         final = await graph.ainvoke(
             {
                 "user_id": user_id,
-                "turn_id": turn_id,
-                "user_text": user_text,
-                "assistant_text": assistant_text,
-                "occurred_at": occurred_at,
+                "turn_id": turn.id,
+                "namespace": turn.namespace,
+                "user_text": turn.user_text,
+                "assistant_text": turn.assistant_text,
+                "occurred_at": turn.occurred_at,
                 "facts": [],
                 "steps": [],
             }
         )
         steps: list[Step] = final["steps"]
         span.set_attribute("facts.found", len(steps))
+        await store.finish_turn(turn.id, datetime.now(UTC))
         return steps
+
+
+async def ingest_turn(
+    store: Store,
+    graph: Any,
+    user_id: str,
+    session_id: str,
+    user_text: str,
+    assistant_text: str,
+    occurred_at: datetime,
+    namespace: str | None = None,
+) -> list[Step]:
+    """Store the turn and process it now, in this call. Safe to call twice with the same round.
+
+    The evaluation and `wait=True` use this; everything else queues the turn (ADR 0020).
+    """
+    with tracer.start_as_current_span("ingest") as span:
+        turn_id, is_new = await store.add_turn(
+            user_id, session_id, user_text, assistant_text, occurred_at, namespace
+        )
+        span.set_attribute("turn.is_new", is_new)
+        if not is_new and await store.turn_processed(user_id, turn_id):
+            return []  # already processed
+        turn = Turn(turn_id, session_id, user_text, assistant_text, occurred_at, namespace)
+        return await process_turn(store, graph, user_id, turn)
