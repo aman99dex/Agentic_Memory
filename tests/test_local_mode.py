@@ -9,6 +9,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 
@@ -63,6 +64,20 @@ def test_session_start_tells_what_is_known_without_any_llm(home, repo, monkeypat
     assert "type hints" in out and "Cloud Run" in out and "checkout page" in out
     elsewhere = hook(monkeypatch, capsysbinary, "session-start", {"cwd": str(home)})
     assert "type hints" in elsewhere and "Cloud Run" not in elsewhere
+
+
+def test_command_output_uses_plain_newlines(home, repo):
+    # Orbis reads `agentic-memory context/recall` output; "\r\n" doubled every line there.
+    async def seed():
+        store = SqliteStore(home / "memory.db", Embedder())
+        await store.add("me", "The user wants type hints everywhere.", [1], _t())
+        await store.add("me", "The user writes tests first.", [2], _t())
+        store.close()
+
+    asyncio.run(seed())
+    cmd = [sys.executable, "-m", "agentic_memory.cli", "context", "--project", str(repo)]
+    out = subprocess.run(cmd, capture_output=True, check=True).stdout  # noqa: S603
+    assert b"type hints" in out and b"\n- The user writes" in out and b"\r\n" not in out
 
 
 def test_commands_run_where_no_home_folder_can_be_made(tmp_path, monkeypatch, capsys):

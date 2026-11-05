@@ -14,6 +14,7 @@ Imports stay inside each command: a hook that only stores a turn must not pay fo
 
 import argparse
 import asyncio
+import io
 import json
 import logging
 import os
@@ -227,11 +228,11 @@ async def _context(project: str | None) -> None:
         print(await context(store, _user(), _namespace(project)) or "Nothing remembered yet.")
 
 
-async def _recall(query: str, project: str | None) -> None:
+async def _recall(query: str, project: str | None, rewrite: bool) -> None:
     from agentic_memory.service import open_service  # noqa: PLC0415
 
     async with open_service(run_worker=False) as service:
-        r = await service.recall(_user(), query, namespace=_namespace(project))
+        r = await service.recall(_user(), query, namespace=_namespace(project), rewrite=rewrite)
         print(r.text or "Nothing found.")
 
 
@@ -339,6 +340,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--project", default=os.getcwd())
     p = sub.add_parser("recall", help="search memories")
     p.add_argument("query")
+    p.add_argument(
+        "--no-rewrite",
+        dest="rewrite",
+        action="store_false",
+        help="search the words as typed: no LLM call, about 2 s faster, no time filter",
+    )
     p.add_argument("--project", default=os.getcwd())
     p = sub.add_parser("import", help="queue past turns from a JSONL file, then process them")
     p.add_argument("file", help="lines of {session_id, user_text, assistant_text, occurred_at}")
@@ -356,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("event", choices=["session-start", "prompt", "stop"])
     args = parser.parse_args(argv)
 
+    # Plain "\n" even on Windows: other programs (Orbis, scripts) read this output, and a
+    # Windows text stream would turn every line ending into "\r\n".
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(newline="\n")
     config.load()
     _setup_logging()
     match args.command:
@@ -368,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         case "context":
             run(_context(args.project))
         case "recall":
-            run(_recall(args.query, args.project))
+            run(_recall(args.query, args.project, args.rewrite))
         case "import":
             run(_import(_read_turns(args.file), args.project))
         case "worker":
