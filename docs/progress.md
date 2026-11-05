@@ -3,9 +3,11 @@
 Newest entry first. Every session ends by adding one entry here.
 
 ## Current status
-- **Phases 0-6 are on `main`. Phase 7 (usable by real people) is built and tested on branch
-  `phase-7-usable`, UNCOMMITTED.** Why: `docs/intent/usable-product.md`. ADRs 0019-0023,
-  `docs/learn/phase-7.md`.
+- **Phases 0-7 are on `main`** (Phase 7 pushed 2026-11-06 as 0ec2cda, plus two fixes found by
+  testing the pushed code: f4b2256, e109914). CI is green on all three. Why Phase 7:
+  `docs/intent/usable-product.md`. ADRs 0019-0023, `docs/learn/phase-7.md`.
+- **No hosted production exists**: the deploy workflow skips itself until `GCP_PROJECT_ID`
+  is set (docs/deploy.md, Aman's accounts). "Production" was tested as the Docker stack.
 - What Phase 7 gives: local mode on SQLite (no Docker), saving that returns in milliseconds with
   a background worker under per-user leases, user vs project scopes, session summaries and
   profiles, a session-start briefing, a Claude Code plugin (three hooks + MCP), tenant API keys,
@@ -24,9 +26,8 @@ Newest entry first. Every session ends by adding one entry here.
   `docs/learn/phase-2..7.md` are written and waiting to be taught.
 
 ## Next session: start here
-1. Ask whether to commit + push `phase-7-usable` (Aman's pattern: push to `main` directly).
-   `uv tool install ... @ git+https://github.com/aman99dex/Agentic_Memory` and
-   `setup claude-code` only work for others once it is on main.
+1. Phase 7 is pushed and verified from GitHub (see the 2026-11-06 entry). Orbis's bridge
+   works with it; three Orbis-side notes were sent to the Orbis session, not changed here.
 2. **Run the evaluation, on an idle machine** (the first attempt made Aman's machine lag).
    Phase 7 changed the extraction schema (a `scope` per fact) and the recall rewrite
    (`past_sessions`), so every cached extraction is stale: the first run re-extracts.
@@ -52,7 +53,38 @@ Newest entry first. Every session ends by adding one entry here.
 
 ---
 
-## 2026-11-04: Phase 7, usable by real people (uncommitted, branch phase-7-usable)
+## 2026-11-06: pushed, then tested as a user would (local, production stack, Orbis)
+**Done**
+- Pushed Phase 7 to main. CI green (it now also starts the image as its real user).
+- **Local, from GitHub:** `uv tool install ...@git+https://github.com/aman99dex/Agentic_Memory`
+  (15 s) and `agentic-memory setup claude-code` (fetches the plugin from GitHub) in a throwaway
+  Claude config; two real `claude -p` sessions in a scratch repo: the second answered the
+  project, where it ships, last session's work and the commit style from memory alone.
+- **Production stack:** fresh clone, `docker compose up` on spare ports: migrations 0001-0005,
+  401 without a key, tenant key from `docker compose exec api agentic-memory keys create`,
+  `examples/chat.py` remembered "vegetarian, Pune", save 26 ms, import + re-import no-op, the
+  operator key couldn't see the tenant's user, the briefing caught up with a new allergy.
+- **Orbis** (its commit 485cab8, CLI bridge): `orbis_recall` in local mode returned the right
+  scope (project + user-wide inside the repo, user-wide only elsewhere); server mode worked
+  against the stack; a session with the plugin + Orbis MCP saved a note via `orbis_write`, and
+  a fresh session answered from both the memory briefing and `orbis_search`.
+
+**Bugs found by testing the pushed code, fixed**
+- The API container crashed on start: every command made `~/.agentic-memory` for its log, and
+  the image's user has no home. Logging falls back to stderr; a test and a CI step cover it.
+  The earlier image check had set `AGENTIC_MEMORY_HOME` itself, which hid this.
+- CLI output was CRLF on Windows, doubling every line inside Orbis. Now plain `\n`.
+- Added `recall --no-rewrite` (about 2 s faster per call, but no session summaries).
+
+**Learned**
+- Claude Code clones a marketplace's whole repo into its config folder; a very deep config path
+  hits Windows' 260-character limit. A normal `~/.claude` path stays at 140.
+- `claude -p` with the real config writes Claude Code's own memory notes for the scratch repo;
+  clear them before a "does it remember" test, or the answer may not come from us.
+
+---
+
+## 2026-11-04: Phase 7, usable by real people (pushed 2026-11-06)
 **Why.** Aman asked for a brutal comparison with TencentDB Agent Memory, Mastra Observational
 Memory and Mem0, then for the system to be usable before any evaluation. A dogfood run of a
 developer's week showed: five setup steps, nothing saved unless the agent calls `remember`,
