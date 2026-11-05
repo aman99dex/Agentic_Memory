@@ -7,3 +7,4 @@ __pycache__/
 .pytest_cache/
 eval/cache/
 eval/data/
+claude-docs/
